@@ -19,7 +19,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
-import android.util.Log
+import android.app.Activity
 
 class CaptureService : Service() {
 
@@ -29,11 +29,14 @@ class CaptureService : Service() {
     private var bgThread: HandlerThread? = null
     private var bgHandler: Handler? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var isCapturing = false
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            Log.e(TAG, "MediaProjection.onStop() fired — projection was revoked/ended by the system")
-            stopSelf()
+            // Capture died. Keep overlays alive. Only release projection resources.
+            releaseCaptureResources()
+            isCapturing = false
+            // Do NOT stopSelf() — user wants tweaks permanent until explicit Stop.
         }
     }
 
@@ -50,6 +53,7 @@ class CaptureService : Service() {
             .setContentTitle("LineDebugger running")
             .setContentText("Capturing screen for guideline detection")
             .setSmallIcon(android.R.drawable.ic_menu_crop)
+            .setOngoing(true)
             .build()
 
         if (Build.VERSION.SDK_INT >= 34) {
@@ -61,80 +65,68 @@ class CaptureService : Service() {
         bgThread = HandlerThread("frame-processor").also { it.start() }
         bgHandler = Handler(bgThread!!.looper)
 
+        // Always attach overlays here. They stay until explicit stop.
         OverlayController.attach(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
-        val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
-        if (resultCode == -1 || data == null) {
-            Log.e(TAG, "onStartCommand: missing resultCode/data, stopping")
+        if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
         }
 
-        // If Start was tapped again while a session is already running, tear the old
-        // one down cleanly first instead of leaking it and silently overwriting the refs.
-        releaseCaptureSession()
+        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
+            ?: Activity.RESULT_CANCELED
+        val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
 
-        try {
-            val mgr = getSystemService(MediaProjectionManager::class.java)
-            val projection = mgr.getMediaProjection(resultCode, data) ?: run {
-                Log.e(TAG, "getMediaProjection() returned null")
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            mediaProjection = projection
-            projection.registerCallback(projectionCallback, mainHandler)
-
-            val metrics = resources.displayMetrics
-            val width = metrics.widthPixels
-            val height = metrics.heightPixels
-            val density = metrics.densityDpi
-            Log.d(TAG, "capture size ${width}x${height} @ ${density}dpi")
-
-            val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-            imageReader = reader
-
-            virtualDisplay = projection.createVirtualDisplay(
-                "line-debugger-capture",
-                width, height, density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.surface, null, bgHandler
-            )
-
-            reader.setOnImageAvailableListener({ r ->
-                try {
-                    val image = r.acquireLatestImage()
-                    if (image != null) {
-                        try {
-                            val cx = OverlayController.circleCenterX
-                            val cy = OverlayController.circleCenterY
-                            val diam = Tunables.circleDiameter
-                            val pixels = extractCrop(image, cx, cy, diam)
-                            val result = LineDetector.detect(pixels, diam)
-                            mainHandler.post { OverlayController.updateResult(result) }
-                        } finally {
-                            image.close()
-                        }
-                    }
-                } catch (t: Throwable) {
-                    // A bug in frame processing must never take the whole service (and
-                    // the overlay windows it owns) down with it.
-                    Log.e(TAG, "frame processing failed", t)
-                }
-            }, bgHandler)
-        } catch (t: Throwable) {
-            Log.e(TAG, "capture setup failed", t)
-            releaseCaptureSession()
+        // FIXED: RESULT_OK is -1. Previous code treated success as failure.
+        if (resultCode != Activity.RESULT_OK || data == null) {
+            // Keep service + overlays alive so user can retry from MainActivity.
+            return START_STICKY
         }
 
-        return START_NOT_STICKY
+        // Already capturing? Ignore duplicate.
+        if (isCapturing) return START_STICKY
+
+        val mgr = getSystemService(MediaProjectionManager::class.java)
+        val projection = mgr.getMediaProjection(resultCode, data) ?: return START_STICKY
+
+        mediaProjection = projection
+        projection.registerCallback(projectionCallback, mainHandler)
+
+        val metrics = resources.displayMetrics
+        val width = metrics.widthPixels
+        val height = metrics.heightPixels
+        val density = metrics.densityDpi
+
+        val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        imageReader = reader
+
+        virtualDisplay = projection.createVirtualDisplay(
+            "line-debugger-capture",
+            width, height, density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            reader.surface, null, bgHandler
+        )
+
+        reader.setOnImageAvailableListener({ r ->
+            val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+            try {
+                val cx = OverlayController.circleCenterX
+                val cy = OverlayController.circleCenterY
+                val diam = Tunables.circleDiameter
+                val pixels = extractCrop(image, cx, cy, diam)
+                val result = LineDetector.detect(pixels, diam)
+                mainHandler.post { OverlayController.updateResult(result) }
+            } finally {
+                image.close()
+            }
+        }, bgHandler)
+
+        isCapturing = true
+        return START_STICKY
     }
 
-    /** Pulls just the diam×diam crop under the controller directly out of the frame's
-     *  pixel buffer (accounting for row/pixel stride padding), instead of allocating
-     *  a full-screen Bitmap every frame. */
     private fun extractCrop(image: Image, cx: Int, cy: Int, diam: Int): IntArray {
         val plane = image.planes[0]
         val buffer = plane.buffer
@@ -166,29 +158,29 @@ class CaptureService : Service() {
         return out
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        OverlayController.detach()
-        releaseCaptureSession()
-        bgThread?.quitSafely()
-    }
-
-    private fun releaseCaptureSession() {
+    private fun releaseCaptureResources() {
         virtualDisplay?.release()
         virtualDisplay = null
         imageReader?.close()
         imageReader = null
-        mediaProjection?.let {
-            runCatching { it.unregisterCallback(projectionCallback) }
-            runCatching { it.stop() }
-        }
+        mediaProjection?.unregisterCallback(projectionCallback)
+        mediaProjection?.stop()
         mediaProjection = null
     }
 
+    override fun onDestroy() {
+        releaseCaptureResources()
+        OverlayController.detach()
+        bgThread?.quitSafely()
+        bgThread = null
+        bgHandler = null
+        super.onDestroy()
+    }
+
     companion object {
-        private const val TAG = "CaptureService"
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_DATA = "data"
+        const val ACTION_STOP = "com.yas.linedebugger.STOP"
 
         fun start(context: Context, resultCode: Int, data: Intent) {
             val intent = Intent(context, CaptureService::class.java)
@@ -198,6 +190,11 @@ class CaptureService : Service() {
         }
 
         fun stop(context: Context) {
+            val intent = Intent(context, CaptureService::class.java).apply {
+                action = ACTION_STOP
+            }
+            context.startService(intent) // triggers onStartCommand → stopSelf
+            // fallback
             context.stopService(Intent(context, CaptureService::class.java))
         }
     }
