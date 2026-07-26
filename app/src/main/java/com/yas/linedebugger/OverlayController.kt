@@ -238,7 +238,12 @@ class DrawOverlayView(context: Context) : View(context) {
             val dx = cos(result.angleRad).toFloat()
             val dy = sin(result.angleRad).toFloat()
             val reach = 4000f
-            canvas.drawLine(cx - dx * reach, cy - dy * reach, cx + dx * reach, cy + dy * reach, linePaint)
+            // Anchor on the real medial-axis point found inside the crop, not the circle's
+            // geometric center — anchoring on the center is what caused the extended ray to
+            // drift off the true guideline whenever the circle wasn't placed dead-on.
+            val originX = cx - d / 2f + result.offsetX
+            val originY = cy - d / 2f + result.offsetY
+            canvas.drawLine(originX - dx * reach, originY - dy * reach, originX + dx * reach, originY + dy * reach, linePaint)
             val deg = Math.toDegrees(result.angleRad)
             canvas.drawText(
                 "angle=%.1f  px=%d  w=%.1f".format(deg, result.pixelCount, result.widthPx),
