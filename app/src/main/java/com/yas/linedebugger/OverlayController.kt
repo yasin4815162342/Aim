@@ -1,6 +1,6 @@
 // ============================================================
 // FILE: app/src/main/java/com/yas/linedebugger/OverlayController.kt
-// FULL REPLACEMENT – coordinate-space fix (FLAG_LAYOUT_IN_SCREEN + real metrics)
+// FULL REPLACEMENT – cyan diagnostic removed + temporal lock for stability
 // ============================================================
 package com.yas.linedebugger
 
@@ -23,6 +23,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -33,6 +34,13 @@ object OverlayController {
     @Volatile var circleCenterY: Int = 800
     @Volatile var lastResult: DetectionResult? = null
 
+    // --- Strong candidate lock (kills blinking / second-guessing) ---
+    private var lockedResult: DetectionResult? = null
+    private var lockHoldFrames: Int = 0
+    private const val LOCK_HOLD = 10          // frames to keep a good lock
+    private const val ANGLE_TOL = 0.18        // \~10 degrees
+    private const val SCORE_IMPROVE = 1.25f   // new candidate must be clearly better
+
     private var windowManager: WindowManager? = null
     private var drawView: DrawOverlayView? = null
     private var handleView: View? = null
@@ -41,12 +49,6 @@ object OverlayController {
 
     private const val OVERLAY_TYPE = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 
-    /**
-     * Force every overlay window into the exact same full-physical-display
-     * coordinate space that MediaProjection (sized with getRealMetrics) uses.
-     * FLAG_LAYOUT_IN_SCREEN is the critical missing piece that was allowing a
-     * fixed origin offset between capture buffer and overlay canvas.
-     */
     private fun WindowManager.LayoutParams.applyFullScreenFlags() {
         flags = flags or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -61,7 +63,6 @@ object OverlayController {
         val wm = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
 
-        // Use the same real metrics that CaptureService will use for VirtualDisplay
         val realMetrics = DisplayMetrics()
         wm.defaultDisplay.getRealMetrics(realMetrics)
         circleCenterX = realMetrics.widthPixels / 2
@@ -79,8 +80,6 @@ object OverlayController {
         ).apply { applyFullScreenFlags() }
         wm.addView(dView, drawParams)
 
-        // handleParams MUST resolve (0,0) to the same physical pixel as drawParams.
-        // Both now share FLAG_LAYOUT_IN_SCREEN + FLAG_LAYOUT_NO_LIMITS + cutout ALWAYS.
         val half = Tunables.circleDiameter / 2
         val hParams = WindowManager.LayoutParams(
             Tunables.circleDiameter,
@@ -217,9 +216,45 @@ object OverlayController {
         container.addView(sb)
     }
 
+    /**
+     * Strong single-candidate system.
+     * - Locks onto a high-quality detection.
+     * - Only replaces the lock when the new candidate is clearly better
+     *   or is consistent in angle and still strong.
+     * - Prevents the ray from blinking / second-guessing between frames.
+     */
     fun updateResult(result: DetectionResult) {
-        lastResult = result
+        val prev = lockedResult
+
+        if (!result.hasLine) {
+            if (lockHoldFrames > 0) {
+                lockHoldFrames--
+                // keep showing the locked line
+            } else {
+                lockedResult = null
+            }
+        } else {
+            val accept = when {
+                prev == null || !prev.hasLine -> true
+                angleDiff(prev.angleRad, result.angleRad) < ANGLE_TOL &&
+                    result.score >= prev.score * 0.70f -> true          // consistent → keep updating
+                result.score > prev.score * SCORE_IMPROVE -> true       // clearly better
+                else -> false
+            }
+            if (accept) {
+                lockedResult = result
+                lockHoldFrames = LOCK_HOLD
+            }
+        }
+
+        lastResult = lockedResult ?: result
         drawView?.invalidate()
+    }
+
+    private fun angleDiff(a: Double, b: Double): Double {
+        var d = abs(a - b) % Math.PI
+        if (d > Math.PI / 2) d = Math.PI - d
+        return d
     }
 
     fun detach() {
@@ -228,6 +263,8 @@ object OverlayController {
         handleView?.let { runCatching { wm.removeView(it) } }
         panelView?.let { runCatching { wm.removeView(it) } }
         drawView = null; handleView = null; panelView = null; windowManager = null
+        lockedResult = null
+        lockHoldFrames = 0
     }
 }
 
@@ -251,14 +288,6 @@ class DrawOverlayView(context: Context) : View(context) {
         color = 0xAA000000.toInt()
         style = Paint.Style.FILL
     }
-    // Diagnostic only: marks (ax,ay), the exact point onDraw thinks the detected
-    // line passes through. If this dot doesn't sit on the real guideline, the bug
-    // is in this window's coordinate space, not in LineDetector's angle/point math.
-    private val anchorPaint = Paint().apply {
-        color = 0xFF00E5FF.toInt()
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -281,65 +310,36 @@ class DrawOverlayView(context: Context) : View(context) {
         canvas.drawRect(16f, 16f, 720f, 76f, bgPaint)
 
         if (result != null && result.hasLine) {
-            // Screen-space medial axis point
             val ax = cx - half + result.offsetX
             val ay = cy - half + result.offsetY
 
             linePaint.color = result.colorArgb
             linePaint.strokeWidth = (result.widthPx * Tunables.widthMultiplier).coerceAtLeast(2f)
 
-            if (Tunables.showDebugPreview) {
-                canvas.drawCircle(ax, ay, 10f, anchorPaint)
-            }
+            // Cyan diagnostic dot completely removed
 
             val dx = cos(result.angleRad).toFloat()
             val dy = sin(result.angleRad).toFloat()
 
-            // ============================================================
-            // SELF-RAY EXCLUSION
-            // Never draw the overlay ray inside the controller zone + \~50%
-            // margin. This keeps the crop under the circle clean so we
-            // only ever see the real game guideline.
-            // ============================================================
-            val excludeRadius = half * 1.70f          // controller radius + 50%
+            val excludeRadius = half * 1.60f
             val reach = 4000f
+            val startDist = excludeRadius
 
-            // Distance from axis point (ax,ay) to circle center (cx,cy)
-            val toCx = cx - ax
-            val toCy = cy - ay
-            val distToCenter = sqrt(toCx * toCx + toCy * toCy)
-
-            // We start drawing only outside the exclusion circle.
-            // Project the exclusion along the ray direction.
-            val startDist = if (distToCenter < 1e-3f) {
-                excludeRadius
-            } else {
-                // Conservative: always start at least excludeRadius away from the axis point
-                // in both directions (guarantees the whole controller zone stays clear)
-                excludeRadius
-            }
-
-            // Positive direction
             canvas.drawLine(
-                ax + dx * startDist,
-                ay + dy * startDist,
-                ax + dx * reach,
-                ay + dy * reach,
+                ax + dx * startDist, ay + dy * startDist,
+                ax + dx * reach, ay + dy * reach,
                 linePaint
             )
-            // Negative direction
             canvas.drawLine(
-                ax - dx * startDist,
-                ay - dy * startDist,
-                ax - dx * reach,
-                ay - dy * reach,
+                ax - dx * startDist, ay - dy * startDist,
+                ax - dx * reach, ay - dy * reach,
                 linePaint
             )
 
             val deg = Math.toDegrees(result.angleRad)
             canvas.drawText(
-                "angle=%.1f  px=%d  w=%.1f  ax=%.0f ay=%.0f".format(
-                    deg, result.pixelCount, result.widthPx, ax, ay
+                "angle=%.1f  px=%d  w=%.1f  score=%.1f".format(
+                    deg, result.pixelCount, result.widthPx, result.score
                 ),
                 24f, 60f, textPaint
             )
