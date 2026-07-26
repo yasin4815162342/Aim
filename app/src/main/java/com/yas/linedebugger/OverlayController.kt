@@ -1,6 +1,6 @@
 // ============================================================
 // FILE: app/src/main/java/com/yas/linedebugger/OverlayController.kt
-// FULL REPLACEMENT – cyan diagnostic removed + temporal lock for stability
+// FULL REPLACEMENT – less sticky lock (fast switch when you drag to a new line)
 // ============================================================
 package com.yas.linedebugger
 
@@ -34,12 +34,11 @@ object OverlayController {
     @Volatile var circleCenterY: Int = 800
     @Volatile var lastResult: DetectionResult? = null
 
-    // --- Strong candidate lock (kills blinking / second-guessing) ---
+    // --- Candidate lock (anti-blink, but switches fast on big angle change) ---
     private var lockedResult: DetectionResult? = null
     private var lockHoldFrames: Int = 0
-    private const val LOCK_HOLD = 10          // frames to keep a good lock
-    private const val ANGLE_TOL = 0.18        // \~10 degrees
-    private const val SCORE_IMPROVE = 1.25f   // new candidate must be clearly better
+    private const val LOCK_HOLD = 6            // frames to keep a good lock on the *same* line
+    private const val ANGLE_TOL = 0.18         // \~10 degrees – considered “same line”
 
     private var windowManager: WindowManager? = null
     private var drawView: DrawOverlayView? = null
@@ -217,11 +216,10 @@ object OverlayController {
     }
 
     /**
-     * Strong single-candidate system.
-     * - Locks onto a high-quality detection.
-     * - Only replaces the lock when the new candidate is clearly better
-     *   or is consistent in angle and still strong.
-     * - Prevents the ray from blinking / second-guessing between frames.
+     * Anti-blink lock that still switches quickly when you drag onto a different line.
+     * - Same / similar angle → keep updating the lock (smooth)
+     * - Big angle change (> \~20°) → switch immediately and use a short hold
+     * - Temporary loss of line → keep previous lock for a few frames only
      */
     fun updateResult(result: DetectionResult) {
         val prev = lockedResult
@@ -229,21 +227,21 @@ object OverlayController {
         if (!result.hasLine) {
             if (lockHoldFrames > 0) {
                 lockHoldFrames--
-                // keep showing the locked line
             } else {
                 lockedResult = null
             }
         } else {
-            val accept = when {
-                prev == null || !prev.hasLine -> true
-                angleDiff(prev.angleRad, result.angleRad) < ANGLE_TOL &&
-                    result.score >= prev.score * 0.70f -> true          // consistent → keep updating
-                result.score > prev.score * SCORE_IMPROVE -> true       // clearly better
-                else -> false
-            }
+            val angleChangedALot = prev != null && prev.hasLine &&
+                    angleDiff(prev.angleRad, result.angleRad) > 0.35   // \~20 degrees
+
+            val accept = prev == null || !prev.hasLine ||
+                    angleDiff(prev.angleRad, result.angleRad) < ANGLE_TOL ||
+                    angleChangedALot ||
+                    result.score > prev.score * 1.15f
+
             if (accept) {
                 lockedResult = result
-                lockHoldFrames = LOCK_HOLD
+                lockHoldFrames = if (angleChangedALot) 3 else LOCK_HOLD
             }
         }
 
@@ -316,12 +314,10 @@ class DrawOverlayView(context: Context) : View(context) {
             linePaint.color = result.colorArgb
             linePaint.strokeWidth = (result.widthPx * Tunables.widthMultiplier).coerceAtLeast(2f)
 
-            // Cyan diagnostic dot completely removed
-
             val dx = cos(result.angleRad).toFloat()
             val dy = sin(result.angleRad).toFloat()
 
-            val excludeRadius = half * 1.60f
+            val excludeRadius = half * 1.50f
             val reach = 4000f
             val startDist = excludeRadius
 
