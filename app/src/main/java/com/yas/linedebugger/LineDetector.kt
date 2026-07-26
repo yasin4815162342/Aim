@@ -1,6 +1,6 @@
 // ============================================================
 // FILE: app/src/main/java/com/yas/linedebugger/LineDetector.kt
-// FULL REPLACEMENT – aggressive circle kill + stable elongated-line only
+// FULL REPLACEMENT – type-fixed + aggressive circle kill + stable elongated-line only
 // ============================================================
 package com.yas.linedebugger
 
@@ -9,8 +9,6 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
-import kotlin.math.PI
-import java.util.ArrayDeque
 
 data class DetectionResult(
     val hasLine: Boolean,
@@ -42,16 +40,15 @@ object LineDetector {
             notGreen[i] = !isFelt && bright > Tunables.minBrightness
         }
 
-        // --- Stage 1: classic morphological ball removal (thin lines die, fat cores survive) ---
+        // --- Stage 1: classic morphological ball removal ---
         val ballCore = erode(notGreen, size, Tunables.ballErodeRadius)
         val ballGrown = dilate(ballCore, size, Tunables.ballErodeRadius + Tunables.ballDilateGrow)
         var lineMask = BooleanArray(n) { notGreen[it] && !ballGrown[it] }
 
         // --- Stage 2: kill remaining circle-like blobs ---
-        // Anything compact / round is removed. Only elongated structures stay.
         lineMask = killCircularBlobs(lineMask, size)
 
-        // Preview (magenta = final line pixels that will be fitted)
+        // Preview
         val preview = IntArray(n)
         for (i in 0 until n) {
             preview[i] = when {
@@ -93,7 +90,7 @@ object LineDetector {
 
         var angle = weightedFitAngle(xs, ys, ws, meanX, meanY)
 
-        // Two rounds of outlier trim + refit (keeps only the dominant straight structure)
+        // Two rounds of outlier trim + refit
         repeat(2) {
             val (tx, ty, tw) = trimOutliersWeighted(xs, ys, ws, angle, meanX, meanY)
             if (tx.size >= Tunables.minLinePixels) {
@@ -119,11 +116,12 @@ object LineDetector {
             val perp = -(xs[i] - meanX) * dirY + (ys[i] - meanY) * dirX
             sqResidual += perp * perp
         }
-        val rms = sqrt(sqResidual / xs.size)
+        val rms = sqrt(sqResidual / xs.size)                 // Double
         val widthEstimate = (rms * 3.46).toFloat().coerceAtLeast(1f)
 
         // Score: prefer many inliers + low residual (higher is better)
-        val score = (xs.size.toFloat() / (1f + rms * 2f)).coerceAtLeast(0f)
+        // Explicit Float conversion to avoid type mismatch
+        val score = (xs.size.toFloat() / (1f + rms.toFloat() * 2f)).coerceAtLeast(0f)
 
         // Average colour of surviving pixels
         var rSum = 0; var gSum = 0; var bSum = 0
@@ -152,10 +150,6 @@ object LineDetector {
     // ------------------------------------------------------------------
     // Circle / blob killer
     // ------------------------------------------------------------------
-    /**
-     * Removes connected components that look circular / compact.
-     * Keeps only elongated structures (true guidelines).
-     */
     private fun killCircularBlobs(mask: BooleanArray, size: Int): BooleanArray {
         val n = size * size
         val visited = BooleanArray(n)
@@ -168,7 +162,6 @@ object LineDetector {
                 val start = y * size + x
                 if (!mask[start] || visited[start]) continue
 
-                // Flood-fill this component
                 var head = 0
                 var tail = 0
                 qx[tail] = x; qy[tail] = y; tail++
@@ -177,21 +170,17 @@ object LineDetector {
                 var minX = x; var maxX = x
                 var minY = y; var maxY = y
                 var area = 0
-                var sumX = 0.0; var sumY = 0.0
 
                 while (head < tail) {
                     val cx = qx[head]
                     val cy = qy[head]
                     head++
                     area++
-                    sumX += cx
-                    sumY += cy
                     if (cx < minX) minX = cx
                     if (cx > maxX) maxX = cx
                     if (cy < minY) minY = cy
                     if (cy > maxY) maxY = cy
 
-                    // 4-connected
                     for (d in 0 until 4) {
                         val nx = cx + when (d) { 0 -> 1; 1 -> -1; else -> 0 }
                         val ny = cy + when (d) { 2 -> 1; 3 -> -1; else -> 0 }
@@ -204,8 +193,7 @@ object LineDetector {
                     }
                 }
 
-                if (area < 6) { // tiny noise – kill
-                    // (already visited, just leave out=false by not restoring)
+                if (area < 6) {
                     for (i in 0 until tail) {
                         out[qy[i] * size + qx[i]] = false
                     }
@@ -217,13 +205,9 @@ object LineDetector {
                 val aspect = maxOf(bw, bh) / minOf(bw, bh).coerceAtLeast(1f)
                 val fill = area / (bw * bh)
 
-                // Circularity test via bounding-box + fill + aspect
-                // True circles / balls: aspect close to 1, high fill ratio
-                // Lines: high aspect OR low fill
                 val isCircleLike = aspect < 1.85f && fill > 0.42f
 
                 if (isCircleLike) {
-                    // Kill the whole blob
                     for (i in 0 until tail) {
                         out[qy[i] * size + qx[i]] = false
                     }
@@ -234,7 +218,7 @@ object LineDetector {
     }
 
     // ------------------------------------------------------------------
-    // Existing helpers (unchanged logic)
+    // Helpers
     // ------------------------------------------------------------------
     private fun weightedFitAngle(
         xs: List<Int>, ys: List<Int>, ws: List<Float>,
