@@ -10,14 +10,17 @@ android {
         applicationId = "com.yas.linedebugger"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1-debug"
+        versionCode = 2
+        versionName = "0.2-debug"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        debug {
+            isMinifyEnabled = false
         }
     }
 
@@ -34,6 +37,6 @@ kotlin {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.activity:activity-ktx:1.9.1")
+    implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.activity:activity-ktx:1.10.1")
 }
