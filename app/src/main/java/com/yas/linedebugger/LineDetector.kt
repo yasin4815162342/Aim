@@ -1,6 +1,6 @@
 // ============================================================
 // FILE: app/src/main/java/com/yas/linedebugger/LineDetector.kt
-// (FULL REPLACEMENT – same as previous + weighted fit)
+// FULL REPLACEMENT – aggressive circle kill + stable elongated-line only
 // ============================================================
 package com.yas.linedebugger
 
@@ -9,6 +9,8 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.PI
+import java.util.ArrayDeque
 
 data class DetectionResult(
     val hasLine: Boolean,
@@ -16,11 +18,11 @@ data class DetectionResult(
     val widthPx: Float = 0f,
     val colorArgb: Int = 0xFFFFFFFF.toInt(),
     val pixelCount: Int = 0,
-    /** Crop-relative X of the intensity-weighted medial-axis reference point. */
     val offsetX: Float = 0f,
-    /** Crop-relative Y of the intensity-weighted medial-axis reference point. */
     val offsetY: Float = 0f,
-    val previewArgb: IntArray = IntArray(0)
+    val previewArgb: IntArray = IntArray(0),
+    /** Quality score used by the lock (higher = better). */
+    val score: Float = 0f
 )
 
 object LineDetector {
@@ -40,23 +42,29 @@ object LineDetector {
             notGreen[i] = !isFelt && bright > Tunables.minBrightness
         }
 
+        // --- Stage 1: classic morphological ball removal (thin lines die, fat cores survive) ---
         val ballCore = erode(notGreen, size, Tunables.ballErodeRadius)
         val ballGrown = dilate(ballCore, size, Tunables.ballErodeRadius + Tunables.ballDilateGrow)
-        val lineMask = BooleanArray(n) { notGreen[it] && !ballGrown[it] }
+        var lineMask = BooleanArray(n) { notGreen[it] && !ballGrown[it] }
 
+        // --- Stage 2: kill remaining circle-like blobs ---
+        // Anything compact / round is removed. Only elongated structures stay.
+        lineMask = killCircularBlobs(lineMask, size)
+
+        // Preview (magenta = final line pixels that will be fitted)
         val preview = IntArray(n)
         for (i in 0 until n) {
             preview[i] = when {
-                lineMask[i] -> 0xFFFF00FF.toInt()
-                ballGrown[i] -> 0xFF3060FF.toInt()
-                notGreen[i] -> 0xFFFFFF00.toInt()
-                else -> 0xFF104010.toInt()
+                lineMask[i] -> 0xFFFF00FF.toInt()          // magenta = accepted line
+                ballGrown[i] -> 0xFF3060FF.toInt()         // blue   = morphological ball
+                notGreen[i] -> 0xFFFFFF00.toInt()          // yellow = rejected non-green
+                else -> 0xFF104010.toInt()                 // dim green = felt
             }
         }
 
-        val xs = ArrayList<Int>()
-        val ys = ArrayList<Int>()
-        val ws = ArrayList<Float>()
+        val xs = ArrayList<Int>(n / 4)
+        val ys = ArrayList<Int>(n / 4)
+        val ws = ArrayList<Float>(n / 4)
         var totalW = 0f
         for (row in 0 until size) for (col in 0 until size) {
             val i = row * size + col
@@ -73,6 +81,7 @@ object LineDetector {
             return DetectionResult(hasLine = false, previewArgb = preview)
         }
 
+        // Weighted centroid + PCA angle
         var meanX = 0.0
         var meanY = 0.0
         for (i in xs.indices) {
@@ -84,6 +93,7 @@ object LineDetector {
 
         var angle = weightedFitAngle(xs, ys, ws, meanX, meanY)
 
+        // Two rounds of outlier trim + refit (keeps only the dominant straight structure)
         repeat(2) {
             val (tx, ty, tw) = trimOutliersWeighted(xs, ys, ws, angle, meanX, meanY)
             if (tx.size >= Tunables.minLinePixels) {
@@ -101,6 +111,7 @@ object LineDetector {
             }
         }
 
+        // Final quality metrics
         val dirX = cos(angle)
         val dirY = sin(angle)
         var sqResidual = 0.0
@@ -108,8 +119,13 @@ object LineDetector {
             val perp = -(xs[i] - meanX) * dirY + (ys[i] - meanY) * dirX
             sqResidual += perp * perp
         }
-        val widthEstimate = (sqrt(sqResidual / xs.size) * 3.46).toFloat().coerceAtLeast(1f)
+        val rms = sqrt(sqResidual / xs.size)
+        val widthEstimate = (rms * 3.46).toFloat().coerceAtLeast(1f)
 
+        // Score: prefer many inliers + low residual (higher is better)
+        val score = (xs.size.toFloat() / (1f + rms * 2f)).coerceAtLeast(0f)
+
+        // Average colour of surviving pixels
         var rSum = 0; var gSum = 0; var bSum = 0
         for (i in xs.indices) {
             val p = pixels[ys[i] * size + xs[i]]
@@ -128,10 +144,98 @@ object LineDetector {
             pixelCount = count,
             offsetX = meanX.toFloat(),
             offsetY = meanY.toFloat(),
-            previewArgb = preview
+            previewArgb = preview,
+            score = score
         )
     }
 
+    // ------------------------------------------------------------------
+    // Circle / blob killer
+    // ------------------------------------------------------------------
+    /**
+     * Removes connected components that look circular / compact.
+     * Keeps only elongated structures (true guidelines).
+     */
+    private fun killCircularBlobs(mask: BooleanArray, size: Int): BooleanArray {
+        val n = size * size
+        val visited = BooleanArray(n)
+        val out = mask.copyOf()
+        val qx = IntArray(n)
+        val qy = IntArray(n)
+
+        for (y in 0 until size) {
+            for (x in 0 until size) {
+                val start = y * size + x
+                if (!mask[start] || visited[start]) continue
+
+                // Flood-fill this component
+                var head = 0
+                var tail = 0
+                qx[tail] = x; qy[tail] = y; tail++
+                visited[start] = true
+
+                var minX = x; var maxX = x
+                var minY = y; var maxY = y
+                var area = 0
+                var sumX = 0.0; var sumY = 0.0
+
+                while (head < tail) {
+                    val cx = qx[head]
+                    val cy = qy[head]
+                    head++
+                    area++
+                    sumX += cx
+                    sumY += cy
+                    if (cx < minX) minX = cx
+                    if (cx > maxX) maxX = cx
+                    if (cy < minY) minY = cy
+                    if (cy > maxY) maxY = cy
+
+                    // 4-connected
+                    for (d in 0 until 4) {
+                        val nx = cx + when (d) { 0 -> 1; 1 -> -1; else -> 0 }
+                        val ny = cy + when (d) { 2 -> 1; 3 -> -1; else -> 0 }
+                        if (nx !in 0 until size || ny !in 0 until size) continue
+                        val ni = ny * size + nx
+                        if (mask[ni] && !visited[ni]) {
+                            visited[ni] = true
+                            qx[tail] = nx; qy[tail] = ny; tail++
+                        }
+                    }
+                }
+
+                if (area < 6) { // tiny noise – kill
+                    // (already visited, just leave out=false by not restoring)
+                    for (i in 0 until tail) {
+                        out[qy[i] * size + qx[i]] = false
+                    }
+                    continue
+                }
+
+                val bw = (maxX - minX + 1).toFloat()
+                val bh = (maxY - minY + 1).toFloat()
+                val aspect = maxOf(bw, bh) / minOf(bw, bh).coerceAtLeast(1f)
+                val fill = area / (bw * bh)
+
+                // Circularity test via bounding-box + fill + aspect
+                // True circles / balls: aspect close to 1, high fill ratio
+                // Lines: high aspect OR low fill
+                val isCircleLike = aspect < 1.85f && fill > 0.42f
+
+                if (isCircleLike) {
+                    // Kill the whole blob
+                    for (i in 0 until tail) {
+                        out[qy[i] * size + qx[i]] = false
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    // ------------------------------------------------------------------
+    // Existing helpers (unchanged logic)
+    // ------------------------------------------------------------------
     private fun weightedFitAngle(
         xs: List<Int>, ys: List<Int>, ws: List<Float>,
         mx: Double, my: Double
