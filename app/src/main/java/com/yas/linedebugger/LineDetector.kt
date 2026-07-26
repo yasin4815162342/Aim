@@ -1,5 +1,6 @@
 // ============================================================
-// LineDetector.kt  (FULL UPDATED)
+// FILE: app/src/main/java/com/yas/linedebugger/LineDetector.kt
+// (FULL REPLACEMENT – same as previous + weighted fit)
 // ============================================================
 package com.yas.linedebugger
 
@@ -19,9 +20,6 @@ data class DetectionResult(
     val offsetX: Float = 0f,
     /** Crop-relative Y of the intensity-weighted medial-axis reference point. */
     val offsetY: Float = 0f,
-    // Same size×size crop, recolored for debugging:
-    // magenta = counted as line, blue = rejected as ball, yellow = non-green
-    // but neither, dim green = felt. Filled in even when hasLine is false.
     val previewArgb: IntArray = IntArray(0)
 )
 
@@ -30,7 +28,7 @@ object LineDetector {
     fun detect(pixels: IntArray, size: Int): DetectionResult {
         val n = size * size
         val notGreen = BooleanArray(n)
-        val brightness = IntArray(n)          // max(R,G,B) for weighting
+        val brightness = IntArray(n)
         for (i in 0 until n) {
             val p = pixels[i]
             val r = (p shr 16) and 0xFF
@@ -42,8 +40,6 @@ object LineDetector {
             notGreen[i] = !isFelt && bright > Tunables.minBrightness
         }
 
-        // Ball problem: erase anything thinner than a ball (the line), then grow
-        // what survives back out to roughly the ball's true size, then subtract.
         val ballCore = erode(notGreen, size, Tunables.ballErodeRadius)
         val ballGrown = dilate(ballCore, size, Tunables.ballErodeRadius + Tunables.ballDilateGrow)
         val lineMask = BooleanArray(n) { notGreen[it] && !ballGrown[it] }
@@ -58,8 +54,6 @@ object LineDetector {
             }
         }
 
-        // Collect intensity-weighted line pixels.
-        // Weight = brightness (higher = more line-like / less anti-aliased fringe).
         val xs = ArrayList<Int>()
         val ys = ArrayList<Int>()
         val ws = ArrayList<Float>()
@@ -79,7 +73,6 @@ object LineDetector {
             return DetectionResult(hasLine = false, previewArgb = preview)
         }
 
-        // Weighted mean → medial-axis reference point (crop-relative)
         var meanX = 0.0
         var meanY = 0.0
         for (i in xs.indices) {
@@ -91,7 +84,6 @@ object LineDetector {
 
         var angle = weightedFitAngle(xs, ys, ws, meanX, meanY)
 
-        // Two-pass outlier trim (unweighted residuals, keep original weights of survivors)
         repeat(2) {
             val (tx, ty, tw) = trimOutliersWeighted(xs, ys, ws, angle, meanX, meanY)
             if (tx.size >= Tunables.minLinePixels) {
@@ -109,7 +101,6 @@ object LineDetector {
             }
         }
 
-        // Width from perpendicular residuals (still unweighted rms for stability)
         val dirX = cos(angle)
         val dirY = sin(angle)
         var sqResidual = 0.0
@@ -119,7 +110,6 @@ object LineDetector {
         }
         val widthEstimate = (sqrt(sqResidual / xs.size) * 3.46).toFloat().coerceAtLeast(1f)
 
-        // Average color of surviving pixels (unweighted – fine for visualization)
         var rSum = 0; var gSum = 0; var bSum = 0
         for (i in xs.indices) {
             val p = pixels[ys[i] * size + xs[i]]
@@ -142,7 +132,6 @@ object LineDetector {
         )
     }
 
-    /** Weighted PCA angle (same formula as before, just weighted moments). */
     private fun weightedFitAngle(
         xs: List<Int>, ys: List<Int>, ws: List<Float>,
         mx: Double, my: Double
@@ -159,7 +148,6 @@ object LineDetector {
         return 0.5 * atan2(2 * sxy, sxx - syy)
     }
 
-    /** Drop points whose perpendicular residual is an outlier; keep their weights. */
     private fun trimOutliersWeighted(
         xs: List<Int>, ys: List<Int>, ws: List<Float>,
         angle: Double, mx: Double, my: Double
@@ -174,7 +162,6 @@ object LineDetector {
         for (v in residuals) { val d = v - meanR; varR += d * d }
         varR /= residuals.size
         val stdR = sqrt(varR)
-        // Slightly more aggressive than original (was *K); still live-tunable via outlierTrimK
         val threshold = stdR * Tunables.outlierTrimK
 
         val outXs = ArrayList<Int>()
