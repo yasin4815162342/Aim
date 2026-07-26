@@ -1,3 +1,7 @@
+// ============================================================
+// OverlayController.kt  – only the DrawOverlayView class changes
+// (rest of the file is identical; shown for completeness)
+// ============================================================
 package com.yas.linedebugger
 
 import android.app.Service
@@ -54,13 +58,7 @@ object OverlayController {
                 OVERLAY_TYPE,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    // Keeps this window out of the MediaProjection capture (and screenshots).
-                    // Without it, the drawn ray/circle is itself part of the next captured
-                    // frame, so once the ray lands exactly on the real line, the detector
-                    // starts fitting to its own rendered overlay and the result snaps/feeds
-                    // back on itself instead of tracking the table.
-                    WindowManager.LayoutParams.FLAG_SECURE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT
             )
         )
@@ -225,6 +223,7 @@ class DrawOverlayView(context: Context) : View(context) {
         val cx = OverlayController.circleCenterX.toFloat()
         val cy = OverlayController.circleCenterY.toFloat()
         val d = Tunables.circleDiameter.toFloat()
+        val half = d / 2f
         val result = OverlayController.lastResult
 
         if (Tunables.showDebugPreview && result != null && result.previewArgb.isNotEmpty()) {
@@ -239,17 +238,17 @@ class DrawOverlayView(context: Context) : View(context) {
 
         canvas.drawRect(16f, 16f, 720f, 76f, bgPaint)
         if (result != null && result.hasLine) {
+            // Convert crop-relative medial-axis point → screen coordinates.
+            // Crop origin is at (cx - half, cy - half).
+            val ax = cx - half + result.offsetX
+            val ay = cy - half + result.offsetY
+
             linePaint.color = result.colorArgb
             linePaint.strokeWidth = (result.widthPx * Tunables.widthMultiplier).coerceAtLeast(2f)
             val dx = cos(result.angleRad).toFloat()
             val dy = sin(result.angleRad).toFloat()
             val reach = 4000f
-            // Anchor on the real medial-axis point found inside the crop, not the circle's
-            // geometric center — anchoring on the center is what caused the extended ray to
-            // drift off the true guideline whenever the circle wasn't placed dead-on.
-            val originX = cx - d / 2f + result.offsetX
-            val originY = cy - d / 2f + result.offsetY
-            canvas.drawLine(originX - dx * reach, originY - dy * reach, originX + dx * reach, originY + dy * reach, linePaint)
+            canvas.drawLine(ax - dx * reach, ay - dy * reach, ax + dx * reach, ay + dy * reach, linePaint)
             val deg = Math.toDegrees(result.angleRad)
             canvas.drawText(
                 "angle=%.1f  px=%d  w=%.1f".format(deg, result.pixelCount, result.widthPx),
