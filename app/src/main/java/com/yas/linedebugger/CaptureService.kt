@@ -1,4 +1,3 @@
-
 package com.yas.linedebugger
 
 import android.app.Notification
@@ -20,6 +19,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 
 class CaptureService : Service() {
 
@@ -31,7 +31,10 @@ class CaptureService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val projectionCallback = object : MediaProjection.Callback() {
-        override fun onStop() { stopSelf() }
+        override fun onStop() {
+            Log.e(TAG, "MediaProjection.onStop() fired — projection was revoked/ended by the system")
+            stopSelf()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -65,48 +68,66 @@ class CaptureService : Service() {
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
         val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
         if (resultCode == -1 || data == null) {
+            Log.e(TAG, "onStartCommand: missing resultCode/data, stopping")
             stopSelf()
             return START_NOT_STICKY
         }
 
-        val mgr = getSystemService(MediaProjectionManager::class.java)
-        val projection = mgr.getMediaProjection(resultCode, data) ?: run {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        mediaProjection = projection
-        projection.registerCallback(projectionCallback, mainHandler)
+        // If Start was tapped again while a session is already running, tear the old
+        // one down cleanly first instead of leaking it and silently overwriting the refs.
+        releaseCaptureSession()
 
-        val metrics = resources.displayMetrics
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val density = metrics.densityDpi
-
-        val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        imageReader = reader
-
-        virtualDisplay = projection.createVirtualDisplay(
-            "line-debugger-capture",
-            width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            reader.surface, null, bgHandler
-        )
-
-        reader.setOnImageAvailableListener({ r ->
-            val image = r.acquireLatestImage()
-            if (image != null) {
-                try {
-                    val cx = OverlayController.circleCenterX
-                    val cy = OverlayController.circleCenterY
-                    val diam = Tunables.circleDiameter
-                    val pixels = extractCrop(image, cx, cy, diam)
-                    val result = LineDetector.detect(pixels, diam)
-                    mainHandler.post { OverlayController.updateResult(result) }
-                } finally {
-                    image.close()
-                }
+        try {
+            val mgr = getSystemService(MediaProjectionManager::class.java)
+            val projection = mgr.getMediaProjection(resultCode, data) ?: run {
+                Log.e(TAG, "getMediaProjection() returned null")
+                stopSelf()
+                return START_NOT_STICKY
             }
-        }, bgHandler)
+            mediaProjection = projection
+            projection.registerCallback(projectionCallback, mainHandler)
+
+            val metrics = resources.displayMetrics
+            val width = metrics.widthPixels
+            val height = metrics.heightPixels
+            val density = metrics.densityDpi
+            Log.d(TAG, "capture size ${width}x${height} @ ${density}dpi")
+
+            val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            imageReader = reader
+
+            virtualDisplay = projection.createVirtualDisplay(
+                "line-debugger-capture",
+                width, height, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface, null, bgHandler
+            )
+
+            reader.setOnImageAvailableListener({ r ->
+                try {
+                    val image = r.acquireLatestImage()
+                    if (image != null) {
+                        try {
+                            val cx = OverlayController.circleCenterX
+                            val cy = OverlayController.circleCenterY
+                            val diam = Tunables.circleDiameter
+                            val pixels = extractCrop(image, cx, cy, diam)
+                            val result = LineDetector.detect(pixels, diam)
+                            mainHandler.post { OverlayController.updateResult(result) }
+                        } finally {
+                            image.close()
+                        }
+                    }
+                } catch (t: Throwable) {
+                    // A bug in frame processing must never take the whole service (and
+                    // the overlay windows it owns) down with it.
+                    Log.e(TAG, "frame processing failed", t)
+                }
+            }, bgHandler)
+        } catch (t: Throwable) {
+            Log.e(TAG, "capture setup failed", t)
+            releaseCaptureSession()
+        }
 
         return START_NOT_STICKY
     }
@@ -148,14 +169,24 @@ class CaptureService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         OverlayController.detach()
-        virtualDisplay?.release()
-        imageReader?.close()
-        mediaProjection?.unregisterCallback(projectionCallback)
-        mediaProjection?.stop()
+        releaseCaptureSession()
         bgThread?.quitSafely()
     }
 
+    private fun releaseCaptureSession() {
+        virtualDisplay?.release()
+        virtualDisplay = null
+        imageReader?.close()
+        imageReader = null
+        mediaProjection?.let {
+            runCatching { it.unregisterCallback(projectionCallback) }
+            runCatching { it.stop() }
+        }
+        mediaProjection = null
+    }
+
     companion object {
+        private const val TAG = "CaptureService"
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_DATA = "data"
 
