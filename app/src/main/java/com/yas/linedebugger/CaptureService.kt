@@ -19,8 +19,6 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
-import android.util.DisplayMetrics
-import android.view.WindowManager
 
 class CaptureService : Service() {
 
@@ -78,10 +76,7 @@ class CaptureService : Service() {
         mediaProjection = projection
         projection.registerCallback(projectionCallback, mainHandler)
 
-        val metrics = DisplayMetrics()
-        val wm = getSystemService(WindowManager::class.java)
-        @Suppress("DEPRECATION")
-        wm.defaultDisplay.getRealMetrics(metrics)
+        val metrics = resources.displayMetrics
         val width = metrics.widthPixels
         val height = metrics.heightPixels
         val density = metrics.densityDpi
