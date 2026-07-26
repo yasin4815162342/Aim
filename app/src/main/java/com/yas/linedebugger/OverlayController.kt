@@ -1,6 +1,6 @@
 // ============================================================
 // FILE: app/src/main/java/com/yas/linedebugger/OverlayController.kt
-// (FULL REPLACEMENT – only DrawOverlayView.onDraw changed for self-ray exclusion)
+// FULL REPLACEMENT – coordinate-space fix (FLAG_LAYOUT_IN_SCREEN + real metrics)
 // ============================================================
 package com.yas.linedebugger
 
@@ -13,6 +13,7 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.os.Build
+import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -40,12 +41,19 @@ object OverlayController {
 
     private const val OVERLAY_TYPE = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 
-    /** Every overlay window must call this so none of them get an OEM-default
-     *  inset the others don't have. Extend/short-edges would also work; ALWAYS
-     *  is the most predictable since it never silently insets on any device. */
-    private fun WindowManager.LayoutParams.applyCutoutMode() {
+    /**
+     * Force every overlay window into the exact same full-physical-display
+     * coordinate space that MediaProjection (sized with getRealMetrics) uses.
+     * FLAG_LAYOUT_IN_SCREEN is the critical missing piece that was allowing a
+     * fixed origin offset between capture buffer and overlay canvas.
+     */
+    private fun WindowManager.LayoutParams.applyFullScreenFlags() {
+        flags = flags or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         }
     }
 
@@ -53,9 +61,11 @@ object OverlayController {
         val wm = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
 
-        val metrics = service.resources.displayMetrics
-        circleCenterX = metrics.widthPixels / 2
-        circleCenterY = metrics.heightPixels / 2
+        // Use the same real metrics that CaptureService will use for VirtualDisplay
+        val realMetrics = DisplayMetrics()
+        wm.defaultDisplay.getRealMetrics(realMetrics)
+        circleCenterX = realMetrics.widthPixels / 2
+        circleCenterY = realMetrics.heightPixels / 2
 
         val dView = DrawOverlayView(service)
         drawView = dView
@@ -64,35 +74,25 @@ object OverlayController {
             WindowManager.LayoutParams.MATCH_PARENT,
             OVERLAY_TYPE,
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
-        ).apply { applyCutoutMode() }
+        ).apply { applyFullScreenFlags() }
         wm.addView(dView, drawParams)
 
-        // handleParams MUST resolve (0,0) to the same physical pixel as drawParams
-        // above. circleCenterX/Y are read off this window's position and then reused
-        // as screen-space coordinates on drawView's canvas (see ax/ay in onDraw) — if
-        // the two windows disagree on where their origin sits (e.g. one is inset for
-        // the status bar / camera cutout and the other draws full-bleed), ax/ay is
-        // wrong by that inset in one axis only. A pure single-axis (typically vertical)
-        // offset is invisible on a line running along that axis and maximal on a line
-        // running across it, which is exactly "fine near vertical, offset near
-        // horizontal" — so both windows need FLAG_LAYOUT_NO_LIMITS and the same
-        // cutout mode, not just drawParams.
+        // handleParams MUST resolve (0,0) to the same physical pixel as drawParams.
+        // Both now share FLAG_LAYOUT_IN_SCREEN + FLAG_LAYOUT_NO_LIMITS + cutout ALWAYS.
         val half = Tunables.circleDiameter / 2
         val hParams = WindowManager.LayoutParams(
             Tunables.circleDiameter,
             Tunables.circleDiameter,
             OVERLAY_TYPE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = circleCenterX - half
             y = circleCenterY - half
-            applyCutoutMode()
+            applyFullScreenFlags()
         }
         handleParams = hParams
 
@@ -297,11 +297,11 @@ class DrawOverlayView(context: Context) : View(context) {
 
             // ============================================================
             // SELF-RAY EXCLUSION
-            // Never draw the overlay ray inside the controller zone + \~30%
+            // Never draw the overlay ray inside the controller zone + \~50%
             // margin. This keeps the crop under the circle clean so we
             // only ever see the real game guideline.
             // ============================================================
-            val excludeRadius = half * 1.30f          // controller radius + 30%
+            val excludeRadius = half * 1.50f          // controller radius + 50%
             val reach = 4000f
 
             // Distance from axis point (ax,ay) to circle center (cx,cy)
