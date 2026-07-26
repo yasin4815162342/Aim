@@ -301,7 +301,7 @@ class DrawOverlayView(context: Context) : View(context) {
             // margin. This keeps the crop under the circle clean so we
             // only ever see the real game guideline.
             // ============================================================
-            val excludeRadius = half * 1.50f          // controller radius + 50%
+            val excludeRadius = half * 1.70f          // controller radius + 50%
             val reach = 4000f
 
             // Distance from axis point (ax,ay) to circle center (cx,cy)
