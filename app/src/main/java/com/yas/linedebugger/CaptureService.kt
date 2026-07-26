@@ -71,7 +71,10 @@ class CaptureService : Service() {
         }
 
         val mgr = getSystemService(MediaProjectionManager::class.java)
-        val projection = mgr.getMediaProjection(resultCode, data)
+        val projection = mgr.getMediaProjection(resultCode, data) ?: run {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         mediaProjection = projection
         projection.registerCallback(projectionCallback, mainHandler)
 
