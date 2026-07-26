@@ -1,6 +1,6 @@
 // ============================================================
-// OverlayController.kt  – only the DrawOverlayView class changes
-// (rest of the file is identical; shown for completeness)
+// FILE: app/src/main/java/com/yas/linedebugger/OverlayController.kt
+// (FULL REPLACEMENT – only DrawOverlayView.onDraw changed for self-ray exclusion)
 // ============================================================
 package com.yas.linedebugger
 
@@ -23,9 +23,8 @@ import android.widget.SeekBar
 import android.widget.TextView
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
-/** Three overlay windows: a full-screen click-through draw layer, a small touchable
- *  drag-handle sized to the controller circle, and a floating tweak panel. */
 object OverlayController {
 
     @Volatile var circleCenterX: Int = 400
@@ -213,10 +212,25 @@ object OverlayController {
 }
 
 class DrawOverlayView(context: Context) : View(context) {
-    private val circlePaint = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.WHITE; isAntiAlias = true }
-    private val linePaint = Paint().apply { style = Paint.Style.STROKE; isAntiAlias = true }
-    private val textPaint = Paint().apply { color = Color.GREEN; textSize = 32f; isAntiAlias = true }
-    private val bgPaint = Paint().apply { color = 0xAA000000.toInt(); style = Paint.Style.FILL }
+    private val circlePaint = Paint().apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        color = Color.WHITE
+        isAntiAlias = true
+    }
+    private val linePaint = Paint().apply {
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+    private val textPaint = Paint().apply {
+        color = Color.GREEN
+        textSize = 32f
+        isAntiAlias = true
+    }
+    private val bgPaint = Paint().apply {
+        color = 0xAA000000.toInt()
+        style = Paint.Style.FILL
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -237,18 +251,59 @@ class DrawOverlayView(context: Context) : View(context) {
         }
 
         canvas.drawRect(16f, 16f, 720f, 76f, bgPaint)
+
         if (result != null && result.hasLine) {
-            // Convert crop-relative medial-axis point → screen coordinates.
-            // Crop origin is at (cx - half, cy - half).
+            // Screen-space medial axis point
             val ax = cx - half + result.offsetX
             val ay = cy - half + result.offsetY
 
             linePaint.color = result.colorArgb
             linePaint.strokeWidth = (result.widthPx * Tunables.widthMultiplier).coerceAtLeast(2f)
+
             val dx = cos(result.angleRad).toFloat()
             val dy = sin(result.angleRad).toFloat()
+
+            // ============================================================
+            // SELF-RAY EXCLUSION
+            // Never draw the overlay ray inside the controller zone + \~30%
+            // margin. This keeps the crop under the circle clean so we
+            // only ever see the real game guideline.
+            // ============================================================
+            val excludeRadius = half * 1.30f          // controller radius + 30%
             val reach = 4000f
-            canvas.drawLine(ax - dx * reach, ay - dy * reach, ax + dx * reach, ay + dy * reach, linePaint)
+
+            // Distance from axis point (ax,ay) to circle center (cx,cy)
+            val toCx = cx - ax
+            val toCy = cy - ay
+            val distToCenter = sqrt(toCx * toCx + toCy * toCy)
+
+            // We start drawing only outside the exclusion circle.
+            // Project the exclusion along the ray direction.
+            val startDist = if (distToCenter < 1e-3f) {
+                excludeRadius
+            } else {
+                // Conservative: always start at least excludeRadius away from the axis point
+                // in both directions (guarantees the whole controller zone stays clear)
+                excludeRadius
+            }
+
+            // Positive direction
+            canvas.drawLine(
+                ax + dx * startDist,
+                ay + dy * startDist,
+                ax + dx * reach,
+                ay + dy * reach,
+                linePaint
+            )
+            // Negative direction
+            canvas.drawLine(
+                ax - dx * startDist,
+                ay - dy * startDist,
+                ax - dx * reach,
+                ay - dy * reach,
+                linePaint
+            )
+
             val deg = Math.toDegrees(result.angleRad)
             canvas.drawText(
                 "angle=%.1f  px=%d  w=%.1f".format(deg, result.pixelCount, result.widthPx),
@@ -259,6 +314,6 @@ class DrawOverlayView(context: Context) : View(context) {
         }
 
         circlePaint.alpha = Tunables.circleAlpha
-        canvas.drawCircle(cx, cy, d / 2f, circlePaint)
+        canvas.drawCircle(cx, cy, half, circlePaint)
     }
 }
