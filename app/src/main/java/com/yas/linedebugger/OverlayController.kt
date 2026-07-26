@@ -54,7 +54,13 @@ object OverlayController {
                 OVERLAY_TYPE,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    // Keeps this window out of the MediaProjection capture (and screenshots).
+                    // Without it, the drawn ray/circle is itself part of the next captured
+                    // frame, so once the ray lands exactly on the real line, the detector
+                    // starts fitting to its own rendered overlay and the result snaps/feeds
+                    // back on itself instead of tracking the table.
+                    WindowManager.LayoutParams.FLAG_SECURE,
                 PixelFormat.TRANSLUCENT
             )
         )
