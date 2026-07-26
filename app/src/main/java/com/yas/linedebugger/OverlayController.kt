@@ -12,6 +12,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.RectF
+import android.os.Build
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -39,6 +40,15 @@ object OverlayController {
 
     private const val OVERLAY_TYPE = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 
+    /** Every overlay window must call this so none of them get an OEM-default
+     *  inset the others don't have. Extend/short-edges would also work; ALWAYS
+     *  is the most predictable since it never silently insets on any device. */
+    private fun WindowManager.LayoutParams.applyCutoutMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        }
+    }
+
     fun attach(service: Service) {
         val wm = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
@@ -49,30 +59,40 @@ object OverlayController {
 
         val dView = DrawOverlayView(service)
         drawView = dView
-        wm.addView(
-            dView,
-            WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT,
-                OVERLAY_TYPE,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                PixelFormat.TRANSLUCENT
-            )
-        )
+        val drawParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            OVERLAY_TYPE,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply { applyCutoutMode() }
+        wm.addView(dView, drawParams)
 
+        // handleParams MUST resolve (0,0) to the same physical pixel as drawParams
+        // above. circleCenterX/Y are read off this window's position and then reused
+        // as screen-space coordinates on drawView's canvas (see ax/ay in onDraw) — if
+        // the two windows disagree on where their origin sits (e.g. one is inset for
+        // the status bar / camera cutout and the other draws full-bleed), ax/ay is
+        // wrong by that inset in one axis only. A pure single-axis (typically vertical)
+        // offset is invisible on a line running along that axis and maximal on a line
+        // running across it, which is exactly "fine near vertical, offset near
+        // horizontal" — so both windows need FLAG_LAYOUT_NO_LIMITS and the same
+        // cutout mode, not just drawParams.
         val half = Tunables.circleDiameter / 2
         val hParams = WindowManager.LayoutParams(
             Tunables.circleDiameter,
             Tunables.circleDiameter,
             OVERLAY_TYPE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = circleCenterX - half
             y = circleCenterY - half
+            applyCutoutMode()
         }
         handleParams = hParams
 
@@ -231,6 +251,14 @@ class DrawOverlayView(context: Context) : View(context) {
         color = 0xAA000000.toInt()
         style = Paint.Style.FILL
     }
+    // Diagnostic only: marks (ax,ay), the exact point onDraw thinks the detected
+    // line passes through. If this dot doesn't sit on the real guideline, the bug
+    // is in this window's coordinate space, not in LineDetector's angle/point math.
+    private val anchorPaint = Paint().apply {
+        color = 0xFF00E5FF.toInt()
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -259,6 +287,10 @@ class DrawOverlayView(context: Context) : View(context) {
 
             linePaint.color = result.colorArgb
             linePaint.strokeWidth = (result.widthPx * Tunables.widthMultiplier).coerceAtLeast(2f)
+
+            if (Tunables.showDebugPreview) {
+                canvas.drawCircle(ax, ay, 10f, anchorPaint)
+            }
 
             val dx = cos(result.angleRad).toFloat()
             val dy = sin(result.angleRad).toFloat()
@@ -306,7 +338,9 @@ class DrawOverlayView(context: Context) : View(context) {
 
             val deg = Math.toDegrees(result.angleRad)
             canvas.drawText(
-                "angle=%.1f  px=%d  w=%.1f".format(deg, result.pixelCount, result.widthPx),
+                "angle=%.1f  px=%d  w=%.1f  ax=%.0f ay=%.0f".format(
+                    deg, result.pixelCount, result.widthPx, ax, ay
+                ),
                 24f, 60f, textPaint
             )
         } else {
