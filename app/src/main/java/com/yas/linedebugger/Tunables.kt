@@ -14,6 +14,7 @@ package com.yas.linedebugger
 object Tunables {
     // --- Detection ---
     @Volatile var greenDiff: Int = AutoAimPrefs.DEFAULT_GREEN_DIFF          // how far G must exceed R and B to count as felt
+    @Volatile var greenLineBrightness: Int = AutoAimPrefs.DEFAULT_GREEN_LINE_BRIGHTNESS  // green pixels this bright or brighter are treated as guideline, not felt
     @Volatile var minBrightness: Int = AutoAimPrefs.DEFAULT_MIN_BRIGHTNESS  // reject near-black shadow pixels as "not line"
     @Volatile var ballErodeRadius: Int = AutoAimPrefs.DEFAULT_BALL_ERODE_RADIUS   // erosion radius that erases the thin line, leaves ball cores
     @Volatile var ballDilateGrow: Int = AutoAimPrefs.DEFAULT_BALL_DILATE_GROW     // extra growth to restore the ball's true footprint
