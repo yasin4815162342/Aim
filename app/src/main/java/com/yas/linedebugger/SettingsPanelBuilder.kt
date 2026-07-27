@@ -83,6 +83,68 @@ object SettingsPanelBuilder {
             root.addView(sb)
         }
 
+        // Bug #4: the correction sliders (Bank Correction Curve) span a wide
+        // range with a fine 0.1 step, which makes landing on a precise
+        // value by dragging impractical. This adds a [-] ... slider ... [+]
+        // row so each tap nudges by exactly one step (0.1) instead.
+        fun correctionSlider(
+            label: String, min: Float, max: Float, initial: Float, steps: Int, stepSize: Float,
+            format: (Float) -> String, onSet: (Float) -> Unit
+        ) {
+            var current = initial
+            val tv = TextView(context).apply { text = "$label: ${format(current)}"; setTextColor(Color.WHITE) }
+            root.addView(tv)
+
+            val sb = SeekBar(context).apply {
+                this.max = steps
+                progress = Math.round((current - min) / (max - min) * steps).coerceIn(0, steps)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+
+            fun applyValue(v: Float, fromButton: Boolean) {
+                current = v.coerceIn(min, max)
+                tv.text = "$label: ${format(current)}"
+                if (fromButton) {
+                    sb.progress = Math.round((current - min) / (max - min) * steps).coerceIn(0, steps)
+                }
+                onSet(current)
+                onChanged()
+            }
+
+            val btnSize = (44 * density).toInt()
+            val decBtn = Button(context).apply {
+                text = "\u2193" // ↓ decrement
+                minimumWidth = 0
+                minimumHeight = 0
+                layoutParams = LinearLayout.LayoutParams(btnSize, LinearLayout.LayoutParams.WRAP_CONTENT)
+                setOnClickListener { applyValue(current - stepSize, fromButton = true) }
+            }
+            val incBtn = Button(context).apply {
+                text = "\u2191" // ↑ increment
+                minimumWidth = 0
+                minimumHeight = 0
+                layoutParams = LinearLayout.LayoutParams(btnSize, LinearLayout.LayoutParams.WRAP_CONTENT)
+                setOnClickListener { applyValue(current + stepSize, fromButton = true) }
+            }
+
+            sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seek: SeekBar?, p: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        val v = min + (max - min) * (p / steps.toFloat())
+                        applyValue(v, fromButton = false)
+                    }
+                }
+                override fun onStartTrackingTouch(seek: SeekBar?) {}
+                override fun onStopTrackingTouch(seek: SeekBar?) {}
+            })
+
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(decBtn)
+            row.addView(sb)
+            row.addView(incBtn)
+            root.addView(row)
+        }
+
         fun checkbox(label: String, initial: Boolean, onSet: (Boolean) -> Unit) {
             val cb = CheckBox(context).apply {
                 text = label
@@ -97,6 +159,13 @@ object SettingsPanelBuilder {
         sectionLabel("Detection")
         intSlider("Green diff", AutoAimPrefs.GREEN_DIFF_MIN, AutoAimPrefs.GREEN_DIFF_MAX, Tunables.greenDiff) {
             Tunables.greenDiff = it; AutoAimPrefs.setGreenDiff(it)
+        }
+        hint("Green pixels at or above this brightness count as guideline, not felt — raise this if a green-ball line isn't showing.")
+        intSlider(
+            "Green line brightness", AutoAimPrefs.GREEN_LINE_BRIGHTNESS_MIN, AutoAimPrefs.GREEN_LINE_BRIGHTNESS_MAX,
+            Tunables.greenLineBrightness
+        ) {
+            Tunables.greenLineBrightness = it; AutoAimPrefs.setGreenLineBrightness(it)
         }
         intSlider("Min brightness", AutoAimPrefs.MIN_BRIGHTNESS_MIN, AutoAimPrefs.MIN_BRIGHTNESS_MAX, Tunables.minBrightness) {
             Tunables.minBrightness = it; AutoAimPrefs.setMinBrightness(it)
@@ -179,13 +248,14 @@ object SettingsPanelBuilder {
 
         sectionLabel("Bank Correction Curve")
         hint("Range: -50° to 40°. 90° (dead-on) is fixed at 0 and not adjustable.")
-        val bankSteps = Math.round((AutoAimPrefs.BANK_CORRECTION_MAX - AutoAimPrefs.BANK_CORRECTION_MIN) / 0.1f)
+        val bankStepSize = 0.1f
+        val bankSteps = Math.round((AutoAimPrefs.BANK_CORRECTION_MAX - AutoAimPrefs.BANK_CORRECTION_MIN) / bankStepSize)
         for (i in AutoAimPrefs.BANK_ANGLES.indices) {
             val idx = i
             val angleLabel = AutoAimPrefs.BANK_ANGLES[i].toInt()
-            floatSlider(
+            correctionSlider(
                 "Correction @ ${angleLabel}°", AutoAimPrefs.BANK_CORRECTION_MIN, AutoAimPrefs.BANK_CORRECTION_MAX,
-                AutoAimPrefs.getBankCorrection(idx), bankSteps, { "%.1f°".format(it) }
+                AutoAimPrefs.getBankCorrection(idx), bankSteps, bankStepSize, { "%.1f°".format(it) }
             ) { v ->
                 AutoAimPrefs.setBankCorrection(idx, v)
                 AutoAimPrefs.pushBankCurve()
