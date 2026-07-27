@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,10 +35,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        AutoAimPrefs.init(applicationContext)
+        AutoAimPrefs.loadIntoTunables()
+
+        val scroll = ScrollView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 96, 48, 48)
         }
+        scroll.addView(root)
 
         statusText = TextView(this).apply {
             text = "1) Overlay permission  2) Start\nThen drag the circle onto a guideline in the pool app."
@@ -81,6 +87,27 @@ class MainActivity : ComponentActivity() {
             }
         })
 
-        setContentView(root)
+        root.addView(TextView(this).apply {
+            text = "\nTweaks below are shared with the floating tweak panel — change " +
+                "them here or over there, either way. Show/Hide for the aim lines and " +
+                "for the tweak panel itself live in the notification while running. " +
+                "Table calibration is done from the floating panel (you need to see the " +
+                "live overlay over the real table to align the corners)."
+            textSize = 13f
+            setPadding(0, 16, 0, 16)
+        })
+
+        // No calibrate button here on purpose — calibration only makes
+        // sense while the live overlay is already running over the actual
+        // table, so it's exposed from the floating panel instead (see
+        // OverlayController). Everything else is fully shared.
+        val settings = SettingsPanelBuilder.build(
+            this,
+            onChanged = { OverlayController.requestRedraw() },
+            onCalibrate = null
+        )
+        root.addView(settings)
+
+        setContentView(scroll)
     }
 }
