@@ -38,6 +38,7 @@ object AutoAimPrefs {
     // ---------------- Keys ----------------
 
     private const val KEY_GREEN_DIFF = "green_diff"
+    private const val KEY_GREEN_LINE_BRIGHTNESS = "green_line_brightness"
     private const val KEY_MIN_BRIGHTNESS = "min_brightness"
     private const val KEY_BALL_ERODE_RADIUS = "ball_erode_radius"
     private const val KEY_BALL_DILATE_GROW = "ball_dilate_grow"
@@ -73,6 +74,19 @@ object AutoAimPrefs {
     const val GREEN_DIFF_MIN = 0
     const val GREEN_DIFF_MAX = 60
     const val DEFAULT_GREEN_DIFF = 15
+
+    // Bug #2 (green felt conflict): a green-hued pixel is only treated as
+    // felt (and thrown away) if it's dimmer than this. Bright green pixels
+    // — the green-ball guideline, which is described as much brighter than
+    // the felt and moderately brighter than the balls — are let through
+    // into the normal candidate mask instead, where the existing
+    // erode/dilate + circularity blob-killer already strips the round green
+    // ball back out, leaving just the elongated line. Non-green lines never
+    // hit this check at all (they fail the hue test earlier), so their
+    // detection is untouched.
+    const val GREEN_LINE_BRIGHTNESS_MIN = 0
+    const val GREEN_LINE_BRIGHTNESS_MAX = 255
+    const val DEFAULT_GREEN_LINE_BRIGHTNESS = 190
 
     // Raised from the old 0-120 range to 0-200 so brighter felt / shadow
     // tones can still be pushed out of the "line" bucket.
@@ -152,6 +166,9 @@ object AutoAimPrefs {
 
     fun getGreenDiff() = prefs.getInt(KEY_GREEN_DIFF, DEFAULT_GREEN_DIFF)
     fun setGreenDiff(v: Int) { prefs.edit().putInt(KEY_GREEN_DIFF, v).apply() }
+
+    fun getGreenLineBrightness() = prefs.getInt(KEY_GREEN_LINE_BRIGHTNESS, DEFAULT_GREEN_LINE_BRIGHTNESS)
+    fun setGreenLineBrightness(v: Int) { prefs.edit().putInt(KEY_GREEN_LINE_BRIGHTNESS, v).apply() }
 
     fun getMinBrightness() = prefs.getInt(KEY_MIN_BRIGHTNESS, DEFAULT_MIN_BRIGHTNESS)
     fun setMinBrightness(v: Int) { prefs.edit().putInt(KEY_MIN_BRIGHTNESS, v).apply() }
@@ -235,6 +252,7 @@ object AutoAimPrefs {
      */
     fun loadIntoTunables() {
         Tunables.greenDiff = getGreenDiff()
+        Tunables.greenLineBrightness = getGreenLineBrightness()
         Tunables.minBrightness = getMinBrightness()
         Tunables.ballErodeRadius = getBallErodeRadius()
         Tunables.ballDilateGrow = getBallDilateGrow()
