@@ -36,7 +36,17 @@ object LineDetector {
             val b = p and 0xFF
             val bright = maxOf(r, g, b)
             brightness[i] = bright
-            val isFelt = (g - r) > Tunables.greenDiff && (g - b) > Tunables.greenDiff
+            val isGreenHue = (g - r) > Tunables.greenDiff && (g - b) > Tunables.greenDiff
+            // Bug #2: a green-hued pixel is only "felt" (and thrown away)
+            // if it's also dim. A green-ball guideline is bright green on
+            // dim green felt, so once it clears greenLineBrightness it's
+            // let through into the same candidate pool every other color
+            // uses — the existing ball-shape erosion/dilation and
+            // circularity blob-killer below still remove the round green
+            // ball, leaving just the elongated line. Non-green pixels never
+            // reach this check (isGreenHue is false), so other colors'
+            // detection is unaffected.
+            val isFelt = isGreenHue && bright < Tunables.greenLineBrightness
             notGreen[i] = !isFelt && bright > Tunables.minBrightness
         }
 
