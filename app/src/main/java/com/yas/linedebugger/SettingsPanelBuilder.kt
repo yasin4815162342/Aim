@@ -346,7 +346,7 @@ object SettingsPanelBuilder {
         }
 
         sectionLabel("Bank Correction Curve")
-        hint("Per-angle offsets in degrees (−60…+60). Twin with Rebound Intensity below: live = correction × (intensity/100). Example: set 85° to +10, intensity 50 → +5° live; intensity 100 → +10°; intensity −100 → −10°. Shared by auto + manual. 90° is fixed at 0.")
+        hint("Range: -50° to 40°. 90° (dead-on) and 0° (pure graze) are both fixed at 0 and have no sliders — neither one can bank.")
         val bankStepSize = 0.1f
         val bankSteps = Math.round((AutoAimPrefs.BANK_CORRECTION_MAX - AutoAimPrefs.BANK_CORRECTION_MIN) / bankStepSize)
         for (i in AutoAimPrefs.BANK_ANGLES.indices) {
@@ -362,12 +362,11 @@ object SettingsPanelBuilder {
         }
         floatSlider(
             "Rebound intensity", AutoAimPrefs.REBOUND_INTENSITY_MIN, AutoAimPrefs.REBOUND_INTENSITY_MAX,
-            AutoAimPrefs.getReboundIntensity(), 200, { "${it.toInt()}" }
+            AutoAimPrefs.getReboundIntensity(), 200, { "${it.toInt()}%" }
         ) { v ->
             AutoAimPrefs.setReboundIntensity(v)
             AutoAimPrefs.pushBankCurve()
         }
-        hint("Master scale for every correction above. live° = correction° × (intensity/100). −100…+100. 0 = pure mirror reflection; negative inverts the whole curve.")
 
         // ==================== Visibility ====================
         sectionLabel("Visibility")

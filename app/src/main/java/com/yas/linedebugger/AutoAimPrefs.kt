@@ -202,23 +202,22 @@ object AutoAimPrefs {
     const val GHOST_BALL_DIAMETER_MAX_PX = 120f
     const val DEFAULT_GHOST_BALL_DIAMETER_PX = 60f
 
-    // Wide range so bank angle tweaks have a real, visible effect (not baby steps).
-    // Negative = toward mirror / steeper bounce; positive = open the angle.
-    const val BANK_CORRECTION_MIN = -60f
-    const val BANK_CORRECTION_MAX = 60f
-    // Rebound intensity is a signed master scale: -100..+100.
-    // Negative inverts the whole correction curve (negative-mirror mode).
-    // 0 = pure geometric reflection (no curve). ±100 = full curve strength.
-    const val REBOUND_INTENSITY_MIN = -100f
-    const val REBOUND_INTENSITY_MAX = 100f
+    const val BANK_CORRECTION_MIN = -50f
+    const val BANK_CORRECTION_MAX = 40f
+    const val REBOUND_INTENSITY_MIN = 0f
+    const val REBOUND_INTENSITY_MAX = 200f
     const val DEFAULT_REBOUND_INTENSITY = 100f
 
-    // Angle control points + defaults. Mid-angle banks (80→60°) default
-    // negative so the first usable curve already leans toward mirror.
-    val BANK_ANGLES = floatArrayOf(85f, 80f, 75f, 70f, 65f, 60f, 55f, 50f, 45f, 40f, 35f, 30f, 25f, 20f, 15f, 10f, 5f)
+    // Angle control points + defaults — identical curve to the Manual app.
+    // 90° and 0° are both locked at 0 (see BankShot) and have no sliders;
+    // these 22 cover the range where correction actually matters.
+    val BANK_ANGLES = floatArrayOf(
+        88f, 84f, 80f, 76f, 72f, 68f, 64f, 60f, 56f, 52f, 48f,
+        44f, 40f, 36f, 32f, 28f, 24f, 20f, 16f, 12f, 8f, 4f
+    )
     val DEFAULT_BANK_CORRECTIONS = floatArrayOf(
-        -2f, -5f, -8f, -10f, -12f, -12f, -8f, -4f, 0f,
-        3f, 6f, 10f, 14f, 18f, 22f, 25f, 28f
+        0.2f, 0.6f, 0.9f, 1.4f, 2.0f, 2.9f, 3.8f, 5.0f, 6.2f, 7.8f, 9.3f,
+        11.2f, 13.0f, 15.0f, 17.0f, 18.8f, 20.5f, 21.8f, 23.0f, 23.8f, 24.5f, 25.0f
     )
 
     const val DEFAULT_AIM_VISIBLE = true
@@ -338,14 +337,11 @@ object AutoAimPrefs {
     fun getGhostBallDiameterPx() = prefs.getFloat(KEY_GHOST_BALL_DIAMETER_PX, DEFAULT_GHOST_BALL_DIAMETER_PX)
     fun setGhostBallDiameterPx(v: Float) { prefs.edit().putFloat(KEY_GHOST_BALL_DIAMETER_PX, v).apply() }
 
-    fun getBankCorrection(index: Int) = prefs.getFloat(KEY_BANK_CORRECTION_PREFIX + index, DEFAULT_BANK_CORRECTIONS[index]).coerceIn(BANK_CORRECTION_MIN, BANK_CORRECTION_MAX)
+    fun getBankCorrection(index: Int) = prefs.getFloat(KEY_BANK_CORRECTION_PREFIX + index, DEFAULT_BANK_CORRECTIONS[index])
     fun setBankCorrection(index: Int, v: Float) { prefs.edit().putFloat(KEY_BANK_CORRECTION_PREFIX + index, v).apply() }
 
     fun getReboundIntensity() = prefs.getFloat(KEY_REBOUND_INTENSITY, DEFAULT_REBOUND_INTENSITY)
-        .coerceIn(REBOUND_INTENSITY_MIN, REBOUND_INTENSITY_MAX)
-    fun setReboundIntensity(v: Float) {
-        prefs.edit().putFloat(KEY_REBOUND_INTENSITY, v.coerceIn(REBOUND_INTENSITY_MIN, REBOUND_INTENSITY_MAX)).apply()
-    }
+    fun setReboundIntensity(v: Float) { prefs.edit().putFloat(KEY_REBOUND_INTENSITY, v).apply() }
 
     fun getTableLeft() = prefs.getFloat(KEY_TABLE_LEFT, -1f)
     fun getTableTop() = prefs.getFloat(KEY_TABLE_TOP, -1f)
