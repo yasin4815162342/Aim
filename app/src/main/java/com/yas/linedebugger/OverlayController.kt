@@ -825,19 +825,26 @@ private class ManualHandle(
                     exactY += (rawY - lastRawY) * Tunables.manualSensitivity
 
                     // When the table is calibrated, the handle centre is
-                    // limited to the table rect (table calibration is the
-                    // hard stop). Otherwise fall back to the usual
-                    // 10%-past-screen-edge clamp.
+                    // limited to the INSET table rect (table edge ± half
+                    // ghost-ball). That way the ghost ball's outer edge
+                    // hugs the yellow calibration line — the red-dot
+                    // centre never sits on the rail itself.
                     val halfHit = MANUAL_HANDLE_HITBOX_PX / 2f
                     if (Tunables.tableLeft >= 0f) {
-                        val minCX = Tunables.tableLeft
-                        val maxCX = Tunables.tableRight
-                        val minCY = Tunables.tableTop
-                        val maxCY = Tunables.tableBottom
+                        val halfBall = Tunables.ghostBallDiameterPx / 2f
+                        val minCX = Tunables.tableLeft + halfBall
+                        val maxCX = Tunables.tableRight - halfBall
+                        val minCY = Tunables.tableTop + halfBall
+                        val maxCY = Tunables.tableBottom - halfBall
                         var cx = exactX + halfHit
                         var cy = exactY + halfHit
-                        if (cx < minCX) cx = minCX else if (cx > maxCX) cx = maxCX
-                        if (cy < minCY) cy = minCY else if (cy > maxCY) cy = maxCY
+                        // Guard against inverted rect if ball > table.
+                        if (maxCX > minCX) {
+                            if (cx < minCX) cx = minCX else if (cx > maxCX) cx = maxCX
+                        }
+                        if (maxCY > minCY) {
+                            if (cy < minCY) cy = minCY else if (cy > maxCY) cy = maxCY
+                        }
                         exactX = cx - halfHit
                         exactY = cy - halfHit
                     } else {
@@ -1322,13 +1329,11 @@ class DrawOverlayView(context: Context) : View(context) {
      * Renders the manual CUE->TARGET aim line and its bank segments.
      *
      * Behaviour:
-     * - CUE line (CUE → TARGET) is always drawn.
-     * - Bank trajectory (extension to the rail + reflected segments +
-     *   double-line / ghost-rail markers on those segments) is only drawn
-     *   when the TARGET is touching a table edge. While TARGET floats in
-     *   the middle of the table, those prediction lines stay hidden.
-     * - Table calibration is the hard limit for handle travel (enforced
-     *   in ManualHandle); here it also defines the reflection walls.
+     * - CUE → TARGET line is always drawn.
+     * - Ghost ball on TARGET handle is always drawn (ManualHandleView).
+     * - Bank trajectory (post-rail reflection) only when TARGET is on a
+     *   rail — i.e. its centre sits at the inset limit so the ghost
+     *   ball's outer edge hugs the yellow calibration line.
      */
     private fun drawManualController(canvas: Canvas) {
         if (!Tunables.manualControllerEnabled) return
@@ -1363,17 +1368,15 @@ class DrawOverlayView(context: Context) : View(context) {
             left = 0f; top = 0f; right = width.toFloat(); bottom = height.toFloat()
         }
 
-        // TARGET is "on the rail" when its centre is within ~half-ball of
-        // any TRUE table edge (not the inset bounce rect). Using the inset
-        // left/right/top/bottom made edge detection almost impossible —
-        // dragging TARGET flush to the felt rail still sat ~halfBall away
-        // from the inset line, so bank trajectory never appeared.
-        val edgeTol = halfBall.coerceAtLeast(16f)
+        // On-edge = TARGET centre is at the inset clamp limit (ghost-ball
+        // outer edge flush on the yellow calibration line). Generous tol
+        // so a near-edge drag still counts.
+        val edgeTol = 12f
         val targetOnEdge = calibrated && (
-            targetX <= Tunables.tableLeft + edgeTol ||
-            targetX >= Tunables.tableRight - edgeTol ||
-            targetY <= Tunables.tableTop + edgeTol ||
-            targetY >= Tunables.tableBottom - edgeTol
+            targetX <= left + edgeTol ||
+            targetX >= right - edgeTol ||
+            targetY <= top + edgeTol ||
+            targetY >= bottom - edgeTol
         )
 
         val alphaScale = Tunables.manualLineOpacity / 255f
@@ -1390,7 +1393,7 @@ class DrawOverlayView(context: Context) : View(context) {
         manualMarkerRing.alpha = (255 * alphaScale).toInt()
         manualMarkerDot.alpha = (255 * alphaScale).toInt()
 
-        // ---- Always: CUE → TARGET direct aim line (never hidden) ----
+        // ---- Always: CUE → TARGET aim line ----
         val nearT = (len - halfBall).coerceAtLeast(0f)
         if (nearT > 1f) {
             val endNearX = cueX + dx * nearT
@@ -1408,9 +1411,10 @@ class DrawOverlayView(context: Context) : View(context) {
             }
         }
 
-        // ---- Only when TARGET is on a rail: bank trajectory prediction ----
+        // ---- Bank trajectory only when TARGET hugs a rail ----
         if (!targetOnEdge) return
 
+        // Full original bank walk (same as pre-change behaviour).
         val maxTotalLength = ((right - left) + (bottom - top)) * 1.4f
         var curX = cueX.coerceIn(left, right)
         var curY = cueY.coerceIn(top, bottom)
@@ -1434,27 +1438,32 @@ class DrawOverlayView(context: Context) : View(context) {
             val endX = curX + segDx * tDraw
             val endY = curY + segDy * tDraw
 
-            // First segment already drawn as CUE→TARGET above; only draw
-            // the part past the target ball, then all bank segments.
-            if (segment == 0) {
+            val segBorder = if (segment == 0) manualBorderPaint else manualBankBorderPaint
+            val segCenter = if (segment == 0) manualCenterPaint else manualBankCenterPaint
+
+            if (segment == 0 && len > halfBall) {
+                // Gap around TARGET; draw only the part past the ghost ball
+                // (CUE→TARGET already drawn above).
                 val farT = len + halfBall
                 if (tDraw > farT) {
                     val farX = curX + segDx * farT
                     val farY = curY + segDy * farT
-                    drawManualSegLine(canvas, farX, farY, endX, endY, manualBorderPaint)
-                    drawManualSegLine(canvas, farX, farY, endX, endY, manualCenterPaint)
+                    drawManualSegLine(canvas, farX, farY, endX, endY, segBorder)
+                    drawManualSegLine(canvas, farX, farY, endX, endY, segCenter)
                     if (Tunables.manualDoubleLineEnabled) {
                         var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
                         if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
                         val px = -segDy * doubleHalfWidth
                         val py = segDx * doubleHalfWidth
-                        canvas.drawLine(farX + px, farY + py, endX + px, endY + py, manualDoublePaint)
-                        canvas.drawLine(farX - px, farY - py, endX - px, endY - py, manualDoublePaint)
+                        val segDouble = manualDoublePaint
+                        canvas.drawLine(farX + px, farY + py, endX + px, endY + py, segDouble)
+                        canvas.drawLine(farX - px, farY - py, endX - px, endY - py, segDouble)
                     }
                 }
-            } else {
-                drawManualSegLine(canvas, curX, curY, endX, endY, manualBankBorderPaint)
-                drawManualSegLine(canvas, curX, curY, endX, endY, manualBankCenterPaint)
+            } else if (segment > 0) {
+                // Reflected bank segments.
+                drawManualSegLine(canvas, curX, curY, endX, endY, segBorder)
+                drawManualSegLine(canvas, curX, curY, endX, endY, segCenter)
                 if (Tunables.manualDoubleLineEnabled) {
                     var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
                     if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
@@ -1468,10 +1477,16 @@ class DrawOverlayView(context: Context) : View(context) {
             remaining -= tDraw
             if (tDraw < tWall - 0.01f) break
 
-            val hitVertical = tWall == tX
+            val hitVertical = abs(tWall - tX) < 1e-3f
 
             if (Tunables.manualGhostRailEnabled && segment + 1 < maxLines) {
-                canvas.drawCircle(endX, endY, (halfBall - manualMarkerRing.strokeWidth / 2f).coerceAtLeast(1f), manualMarkerRing)
+                // Centre sits on the inset wall → ghost-ball edge flush on
+                // the true (yellow) table edge.
+                canvas.drawCircle(
+                    endX, endY,
+                    (halfBall - manualMarkerRing.strokeWidth / 2f).coerceAtLeast(1f),
+                    manualMarkerRing
+                )
                 canvas.drawCircle(endX, endY, 4f, manualMarkerDot)
             }
 
