@@ -44,6 +44,13 @@ object AutoAimPrefs {
     private const val KEY_BALL_DILATE_GROW = "ball_dilate_grow"
     private const val KEY_MIN_LINE_PIXELS = "min_line_pixels"
     private const val KEY_OUTLIER_TRIM_K = "outlier_trim_k"
+
+    private const val KEY_COLOR_DETECTION_MODE = "color_detection_mode"
+    private const val KEY_FELT_HUE_TOLERANCE_DEG = "felt_hue_tolerance_deg"
+    private const val KEY_FELT_BRIGHTNESS_DIFF = "felt_brightness_diff"
+    private const val KEY_FELT_SATURATION_MIN = "felt_saturation_min"
+    private const val KEY_MANUAL_FELT_HUE_DEG = "manual_felt_hue_deg"
+
     private const val KEY_CIRCLE_DIAMETER = "circle_diameter"
     private const val KEY_CIRCLE_ALPHA = "circle_alpha"
     private const val KEY_RAY_MONITOR_ENABLED = "ray_monitor_enabled"
@@ -57,6 +64,17 @@ object AutoAimPrefs {
     private const val KEY_DASHED_LINE_ENABLED = "dashed_line_enabled"
     private const val KEY_DOUBLE_LINE_WIDTH_PX = "double_line_width_px"
     private const val KEY_BANK_MARKER_ENABLED = "bank_marker_enabled"
+
+    private const val KEY_RAIL_GHOST_BALL_DIAMETER_PX = "rail_ghost_ball_diameter_px"
+    private const val KEY_MANUAL_MODE_ENABLED = "manual_mode_enabled"
+
+    private const val KEY_MANUAL_SENSITIVITY = "manual_sensitivity"
+    private const val KEY_MANUAL_OPACITY = "manual_opacity"
+    private const val KEY_MANUAL_LINE_WIDTH_PX = "manual_line_width_px"
+    private const val KEY_MANUAL_LINE_COLOR = "manual_line_color"
+    private const val KEY_MANUAL_DASHED_LINE_ENABLED = "manual_dashed_line_enabled"
+    private const val KEY_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX = "manual_double_line_width_offset_px"
+    private const val KEY_MANUAL_SHOW_RAIL_GHOST_BALL = "manual_show_rail_ghost_ball"
 
     private const val KEY_BANK_CORRECTION_PREFIX = "bank_correction_"
     private const val KEY_REBOUND_INTENSITY = "rebound_intensity"
@@ -110,6 +128,49 @@ object AutoAimPrefs {
     const val OUTLIER_TRIM_K_MAX = 6.0f
     const val DEFAULT_OUTLIER_TRIM_K = 2.5f
 
+    // Bug (auto ray-pixel detection - color failures): 0 = Legacy Green-Diff
+    // (original hardcoded-green algorithm, kept for comparison / fallback).
+    // 1 = Adaptive Felt Sample — the new default primary solution. Samples
+    // the actual felt hue+brightness per frame instead of assuming green,
+    // so green/brown/yellow (and every other color) guidelines are treated
+    // the same way red already was. 2 = Manual Hue Reference — same
+    // classifier, fixed hue slider instead of auto-sampling.
+    const val COLOR_MODE_LEGACY_GREEN_DIFF = 0
+    const val COLOR_MODE_ADAPTIVE_FELT_SAMPLE = 1
+    const val COLOR_MODE_MANUAL_HUE = 2
+    const val DEFAULT_COLOR_DETECTION_MODE = COLOR_MODE_ADAPTIVE_FELT_SAMPLE
+
+    // How far (in hue degrees, 0-360 hue wheel) a pixel may sit from the
+    // sampled/manual felt hue and still count as felt. Guideline colors
+    // that are hue-distinct from the felt (red, blue, orange, brown...)
+    // clear this easily; a green guideline on green felt relies on the
+    // brightness differential below instead.
+    const val FELT_HUE_TOLERANCE_MIN_DEG = 5f
+    const val FELT_HUE_TOLERANCE_MAX_DEG = 60f
+    const val DEFAULT_FELT_HUE_TOLERANCE_DEG = 22f
+
+    // How far a same-hue pixel's brightness must differ from the sampled
+    // felt brightness to count as guideline instead of felt (shading/
+    // highlight/shadow on the felt itself). This is what lets a green-ball
+    // guideline — same hue as the felt, much brighter — through.
+    const val FELT_BRIGHTNESS_DIFF_MIN = 10
+    const val FELT_BRIGHTNESS_DIFF_MAX = 120
+    const val DEFAULT_FELT_BRIGHTNESS_DIFF = 45
+
+    // Below this saturation (0-100, i.e. near-gray/white/black), a pixel's
+    // hue is unreliable and it's excluded from felt-hue *sampling* (it can
+    // still be classified using brightness alone once a felt hue exists).
+    const val FELT_SATURATION_MIN_MIN = 0
+    const val FELT_SATURATION_MIN_MAX = 60
+    const val DEFAULT_FELT_SATURATION_MIN = 15
+
+    // Manual Hue Reference mode's fixed felt-hue slider, 0-360 on the hue
+    // wheel (0/360 = red, 120 = green, 240 = blue). Default sits on green
+    // felt, the common case, but any felt color can be dialed in.
+    const val MANUAL_FELT_HUE_MIN_DEG = 0f
+    const val MANUAL_FELT_HUE_MAX_DEG = 360f
+    const val DEFAULT_MANUAL_FELT_HUE_DEG = 120f
+
     const val CIRCLE_DIAMETER_MIN = 40
     const val CIRCLE_DIAMETER_MAX = 220
     const val DEFAULT_CIRCLE_DIAMETER = 100
@@ -145,6 +206,38 @@ object AutoAimPrefs {
     const val DEFAULT_DOUBLE_LINE_WIDTH_PX = 60f
 
     const val DEFAULT_BANK_MARKER_ENABLED = true
+
+    // Bug #3 (ghost-ball alignment): shared object-ball diameter used to
+    // inset the rail boundary for BOTH controllers, so the bank-shot angle
+    // line always terminates at the ghost ball's center, never the raw
+    // table edge. Same range as the legacy Manual app's ball-size slider.
+    const val RAIL_GHOST_BALL_DIAMETER_MIN_PX = 20f
+    const val RAIL_GHOST_BALL_DIAMETER_MAX_PX = 120f
+    const val DEFAULT_RAIL_GHOST_BALL_DIAMETER_PX = 60f
+
+    const val DEFAULT_MANUAL_MODE_ENABLED = false
+
+    const val MANUAL_SENSITIVITY_MIN = 0.1f
+    const val MANUAL_SENSITIVITY_MAX = 1.5f
+    const val DEFAULT_MANUAL_SENSITIVITY = 1.0f
+
+    const val MANUAL_OPACITY_MIN = 60
+    const val MANUAL_OPACITY_MAX = 255
+    const val DEFAULT_MANUAL_OPACITY = 255
+
+    const val MANUAL_LINE_WIDTH_MIN_PX = 1.0f
+    const val MANUAL_LINE_WIDTH_MAX_PX = 6.0f
+    const val DEFAULT_MANUAL_LINE_WIDTH_PX = 2.2f
+
+    val DEFAULT_MANUAL_LINE_COLOR = Color.WHITE
+
+    const val DEFAULT_MANUAL_DASHED_LINE_ENABLED = false
+
+    const val MANUAL_DOUBLE_LINE_WIDTH_OFFSET_MIN_PX = -6f
+    const val MANUAL_DOUBLE_LINE_WIDTH_OFFSET_MAX_PX = 6f
+    const val DEFAULT_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX = 0f
+
+    const val DEFAULT_MANUAL_SHOW_RAIL_GHOST_BALL = true
 
     const val BANK_CORRECTION_MIN = -50f
     const val BANK_CORRECTION_MAX = 40f
@@ -185,6 +278,21 @@ object AutoAimPrefs {
     fun getOutlierTrimK() = prefs.getFloat(KEY_OUTLIER_TRIM_K, DEFAULT_OUTLIER_TRIM_K)
     fun setOutlierTrimK(v: Float) { prefs.edit().putFloat(KEY_OUTLIER_TRIM_K, v).apply() }
 
+    fun getColorDetectionMode() = prefs.getInt(KEY_COLOR_DETECTION_MODE, DEFAULT_COLOR_DETECTION_MODE)
+    fun setColorDetectionMode(v: Int) { prefs.edit().putInt(KEY_COLOR_DETECTION_MODE, v).apply() }
+
+    fun getFeltHueToleranceDeg() = prefs.getFloat(KEY_FELT_HUE_TOLERANCE_DEG, DEFAULT_FELT_HUE_TOLERANCE_DEG)
+    fun setFeltHueToleranceDeg(v: Float) { prefs.edit().putFloat(KEY_FELT_HUE_TOLERANCE_DEG, v).apply() }
+
+    fun getFeltBrightnessDiff() = prefs.getInt(KEY_FELT_BRIGHTNESS_DIFF, DEFAULT_FELT_BRIGHTNESS_DIFF)
+    fun setFeltBrightnessDiff(v: Int) { prefs.edit().putInt(KEY_FELT_BRIGHTNESS_DIFF, v).apply() }
+
+    fun getFeltSaturationMin() = prefs.getInt(KEY_FELT_SATURATION_MIN, DEFAULT_FELT_SATURATION_MIN)
+    fun setFeltSaturationMin(v: Int) { prefs.edit().putInt(KEY_FELT_SATURATION_MIN, v).apply() }
+
+    fun getManualFeltHueDeg() = prefs.getFloat(KEY_MANUAL_FELT_HUE_DEG, DEFAULT_MANUAL_FELT_HUE_DEG)
+    fun setManualFeltHueDeg(v: Float) { prefs.edit().putFloat(KEY_MANUAL_FELT_HUE_DEG, v).apply() }
+
     fun getCircleDiameter() = prefs.getInt(KEY_CIRCLE_DIAMETER, DEFAULT_CIRCLE_DIAMETER)
     fun setCircleDiameter(v: Int) { prefs.edit().putInt(KEY_CIRCLE_DIAMETER, v).apply() }
 
@@ -217,6 +325,33 @@ object AutoAimPrefs {
 
     fun isBankMarkerEnabled() = prefs.getBoolean(KEY_BANK_MARKER_ENABLED, DEFAULT_BANK_MARKER_ENABLED)
     fun setBankMarkerEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_BANK_MARKER_ENABLED, v).apply() }
+
+    fun getRailGhostBallDiameterPx() = prefs.getFloat(KEY_RAIL_GHOST_BALL_DIAMETER_PX, DEFAULT_RAIL_GHOST_BALL_DIAMETER_PX)
+    fun setRailGhostBallDiameterPx(v: Float) { prefs.edit().putFloat(KEY_RAIL_GHOST_BALL_DIAMETER_PX, v).apply() }
+
+    fun isManualModeEnabled() = prefs.getBoolean(KEY_MANUAL_MODE_ENABLED, DEFAULT_MANUAL_MODE_ENABLED)
+    fun setManualModeEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_MODE_ENABLED, v).apply() }
+
+    fun getManualSensitivity() = prefs.getFloat(KEY_MANUAL_SENSITIVITY, DEFAULT_MANUAL_SENSITIVITY)
+    fun setManualSensitivity(v: Float) { prefs.edit().putFloat(KEY_MANUAL_SENSITIVITY, v).apply() }
+
+    fun getManualOpacity() = prefs.getInt(KEY_MANUAL_OPACITY, DEFAULT_MANUAL_OPACITY)
+    fun setManualOpacity(v: Int) { prefs.edit().putInt(KEY_MANUAL_OPACITY, v).apply() }
+
+    fun getManualLineWidthPx() = prefs.getFloat(KEY_MANUAL_LINE_WIDTH_PX, DEFAULT_MANUAL_LINE_WIDTH_PX)
+    fun setManualLineWidthPx(v: Float) { prefs.edit().putFloat(KEY_MANUAL_LINE_WIDTH_PX, v).apply() }
+
+    fun getManualLineColor() = prefs.getInt(KEY_MANUAL_LINE_COLOR, DEFAULT_MANUAL_LINE_COLOR)
+    fun setManualLineColor(v: Int) { prefs.edit().putInt(KEY_MANUAL_LINE_COLOR, v).apply() }
+
+    fun isManualDashedLineEnabled() = prefs.getBoolean(KEY_MANUAL_DASHED_LINE_ENABLED, DEFAULT_MANUAL_DASHED_LINE_ENABLED)
+    fun setManualDashedLineEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_DASHED_LINE_ENABLED, v).apply() }
+
+    fun getManualDoubleLineWidthOffsetPx() = prefs.getFloat(KEY_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX, DEFAULT_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX)
+    fun setManualDoubleLineWidthOffsetPx(v: Float) { prefs.edit().putFloat(KEY_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX, v).apply() }
+
+    fun isManualShowRailGhostBall() = prefs.getBoolean(KEY_MANUAL_SHOW_RAIL_GHOST_BALL, DEFAULT_MANUAL_SHOW_RAIL_GHOST_BALL)
+    fun setManualShowRailGhostBall(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_SHOW_RAIL_GHOST_BALL, v).apply() }
 
     fun getBankCorrection(index: Int) = prefs.getFloat(KEY_BANK_CORRECTION_PREFIX + index, DEFAULT_BANK_CORRECTIONS[index])
     fun setBankCorrection(index: Int, v: Float) { prefs.edit().putFloat(KEY_BANK_CORRECTION_PREFIX + index, v).apply() }
@@ -258,6 +393,13 @@ object AutoAimPrefs {
         Tunables.ballDilateGrow = getBallDilateGrow()
         Tunables.minLinePixels = getMinLinePixels()
         Tunables.outlierTrimK = getOutlierTrimK()
+
+        Tunables.colorDetectionMode = getColorDetectionMode()
+        Tunables.feltHueToleranceDeg = getFeltHueToleranceDeg()
+        Tunables.feltBrightnessDiff = getFeltBrightnessDiff()
+        Tunables.feltSaturationMin = getFeltSaturationMin()
+        Tunables.manualFeltHueDeg = getManualFeltHueDeg()
+
         Tunables.circleDiameter = getCircleDiameter()
         Tunables.circleAlpha = getCircleAlpha()
         Tunables.rayMonitorEnabled = isRayMonitorEnabled()
@@ -271,6 +413,17 @@ object AutoAimPrefs {
         Tunables.dashedLineEnabled = isDashedLineEnabled()
         Tunables.doubleLineWidthPx = getDoubleLineWidthPx()
         Tunables.bankMarkerEnabled = isBankMarkerEnabled()
+
+        Tunables.railGhostBallDiameterPx = getRailGhostBallDiameterPx()
+        Tunables.manualModeEnabled = isManualModeEnabled()
+
+        Tunables.manualSensitivity = getManualSensitivity()
+        Tunables.manualOpacity = getManualOpacity()
+        Tunables.manualLineWidthPx = getManualLineWidthPx()
+        Tunables.manualLineColor = getManualLineColor()
+        Tunables.manualDashedLineEnabled = isManualDashedLineEnabled()
+        Tunables.manualDoubleLineWidthOffsetPx = getManualDoubleLineWidthOffsetPx()
+        Tunables.manualShowRailGhostBall = isManualShowRailGhostBall()
 
         Tunables.tableLeft = getTableLeft()
         Tunables.tableTop = getTableTop()
