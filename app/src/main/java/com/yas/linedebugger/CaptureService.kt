@@ -129,6 +129,10 @@ class CaptureService : Service() {
         reader.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
+                // Controller mode: while Manual is active there's nothing
+                // for the auto-detected guideline to drive, so skip the
+                // (relatively expensive) crop + detect pass entirely.
+                if (Tunables.manualModeEnabled) return@setOnImageAvailableListener
                 val cx = OverlayController.circleCenterX
                 val cy = OverlayController.circleCenterY
                 val diam = Tunables.circleDiameter
