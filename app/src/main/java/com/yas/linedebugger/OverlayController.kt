@@ -120,8 +120,16 @@ object OverlayController {
         wm.addView(dView, drawParams)
 
         attachCircleHandle(svc, wm)
-        applyHandleVisibility()
         buildPanel(svc, wm)
+
+        // Feature: ported legacy manual CUE/TARGET controllers. Attached
+        // eagerly alongside the automatic controller (same pattern as
+        // everything else here) and kept in sync via
+        // applyControllerModeVisibility — exactly one of the two
+        // controllers is visible/touchable at a time, governed by
+        // Tunables.manualModeEnabled.
+        ManualController.attach(svc, wm, screenWidth, screenHeight)
+        applyControllerModeVisibility()
     }
 
     private fun attachCircleHandle(service: Service, wm: WindowManager) {
@@ -194,6 +202,16 @@ object OverlayController {
         drawView?.invalidate()
     }
 
+    /** Called by the settings UI when the shared rail-ghost-ball diameter
+     * slider moves (bug #3's ball size). Resizes the manual controller's
+     * cue/target handles to match, since they reuse this same value as
+     * their visual diameter — ported unchanged from the Manual app's
+     * ballSizePx, which served the identical dual purpose. */
+    fun onRailGhostBallDiameterChanged(newDiameterPx: Float) {
+        ManualController.onBallDiameterChanged(newDiameterPx)
+        drawView?.invalidate()
+    }
+
     private fun buildPanel(service: Service, wm: WindowManager) {
         val panel = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
@@ -263,12 +281,18 @@ object OverlayController {
     /** Bug #1: Hide must conceal the draggable Ray Circle controller too,
      * not just the canvas-drawn aim line. Same VISIBLE/INVISIBLE +
      * FLAG_NOT_TOUCHABLE pattern as [applyPanelVisibility], so a hidden
-     * controller also stops swallowing drags. */
+     * controller also stops swallowing drags.
+     *
+     * Also folds in controller mode: the Ray Circle handle is only
+     * shown/touchable when aim is visible AND the automatic controller is
+     * the active one — while Manual mode is active it's fully out of the
+     * way, same as Hide, so it can never swallow a drag meant for the
+     * manual cue/target handles underneath it. */
     private fun applyHandleVisibility() {
         val wm = windowManager ?: return
         val hView = handleView ?: return
         val params = handleParams ?: return
-        if (Tunables.aimVisible) {
+        if (Tunables.aimVisible && !Tunables.manualModeEnabled) {
             hView.visibility = View.VISIBLE
             params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         } else {
@@ -276,6 +300,29 @@ object OverlayController {
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         }
         runCatching { wm.updateViewLayout(hView, params) }
+    }
+
+    /** Applies controller-mode visibility to both controllers at once:
+     * exactly one of the automatic Ray Circle or the manual cue/target
+     * handles is visible/touchable, governed by Tunables.manualModeEnabled.
+     * Safe to call whether or not the overlay is attached yet. */
+    private fun applyControllerModeVisibility() {
+        applyHandleVisibility()
+        ManualController.applyVisibility()
+        drawView?.invalidate()
+    }
+
+    fun isManualModeEnabled(): Boolean = Tunables.manualModeEnabled
+
+    /** Switches between the Automatic (Ray Circle) and Manual (ported
+     * CUE/TARGET) controllers. Called from the in-app UI (MainActivity) —
+     * this is a mode switch, not a concurrent overlay, so the two never
+     * compete for the same drag input on screen. */
+    fun setManualModeEnabled(enabled: Boolean) {
+        if (Tunables.manualModeEnabled == enabled) return
+        Tunables.manualModeEnabled = enabled
+        AutoAimPrefs.setManualModeEnabled(enabled)
+        applyControllerModeVisibility()
     }
 
     private fun applyPanelVisibility(panel: View, params: WindowManager.LayoutParams) {
@@ -304,8 +351,7 @@ object OverlayController {
     fun toggleAimVisible() {
         Tunables.aimVisible = !Tunables.aimVisible
         AutoAimPrefs.setAimVisible(Tunables.aimVisible)
-        applyHandleVisibility()
-        drawView?.invalidate()
+        applyControllerModeVisibility()
     }
 
     fun isTweakPanelVisible(): Boolean = Tunables.tweakPanelVisible
@@ -428,6 +474,7 @@ object OverlayController {
         edgeBHandle?.remove(); edgeBHandle = null
         edgeADPad?.remove(); edgeADPad = null
         edgeBDPad?.remove(); edgeBDPad = null
+        ManualController.detach()
         drawView = null; handleView = null; panelView = null; windowManager = null
         service = null
         calibrationMode = false
@@ -745,6 +792,14 @@ class DrawOverlayView(context: Context) : View(context) {
         // window and isn't part of this canvas.
         if (!Tunables.aimVisible) return
 
+        // Controller mode: while Manual is active, the automatic
+        // controller's Ray Circle, Ray Monitor preview, and auto-detected
+        // aim line all stay off-canvas so they don't visually clutter (or
+        // get confused with) the manual cue/target line below. The
+        // calibration rectangle above is intentionally exempt — table
+        // calibration is shared and useful in either mode.
+        if (Tunables.manualModeEnabled) return
+
         val cx = OverlayController.circleCenterX.toFloat()
         val cy = OverlayController.circleCenterY.toFloat()
         val half = Tunables.circleDiameter / 2f
@@ -811,11 +866,22 @@ class DrawOverlayView(context: Context) : View(context) {
         // Once calibrated, walls are the table edges — the ray has no
         // effect beyond them. Uncalibrated falls back to the full screen,
         // same as before.
+        //
+        // Bug #3 fix: the boundary used to be the raw calibrated table
+        // edge, so a bank-shot line terminated (and the ghost ball drew)
+        // right at the rail rather than where the ball's CENTER rests once
+        // its edge is flush against the rail. Inset by the shared ghost-
+        // ball radius, exactly like the Manual app always did — this is
+        // the "shared component" fix, so both controllers get physically
+        // identical ghost-ball placement and angle-line centering.
         val calibrated = Tunables.tableLeft >= 0f
         val left: Float; val top: Float; val right: Float; val bottom: Float
         if (calibrated) {
-            left = Tunables.tableLeft; top = Tunables.tableTop
-            right = Tunables.tableRight; bottom = Tunables.tableBottom
+            val halfBall = Tunables.railGhostBallDiameterPx / 2f
+            left = Tunables.tableLeft + halfBall
+            top = Tunables.tableTop + halfBall
+            right = Tunables.tableRight - halfBall
+            bottom = Tunables.tableBottom - halfBall
         } else {
             left = 0f; top = 0f; right = width.toFloat(); bottom = height.toFloat()
         }
@@ -886,7 +952,14 @@ class DrawOverlayView(context: Context) : View(context) {
             if (Tunables.bankMarkerEnabled && segment + 1 < maxLines &&
                 hypot(endX - zoneCx, endY - zoneCy) >= zoneR
             ) {
-                canvas.drawCircle(endX, endY, 10f, markerRing)
+                // Bug #3: ring radius now matches the actual rail ghost
+                // ball (railGhostBallDiameterPx) used to inset the walls
+                // above, instead of a fixed 10px placeholder — so the
+                // drawn ball visually matches the geometry the angle line
+                // is actually reflecting against, and the line passes
+                // through its true geometric center (endX, endY).
+                val ghostR = Tunables.railGhostBallDiameterPx / 2f
+                canvas.drawCircle(endX, endY, ghostR - markerRing.strokeWidth / 2f, markerRing)
                 canvas.drawCircle(endX, endY, 4f, markerDot)
             }
 
