@@ -245,15 +245,20 @@ object OverlayController {
         // devices like the Galaxy A32 (~720–1080px wide). Content is
         // forced to MATCH_PARENT so seekbar rows shrink instead of
         // clipping the right-side buttons.
+        //
+        // CRITICAL: ScrollView's child must use FrameLayout LayoutParams
+        // (ScrollView extends FrameLayout). LinearLayout.LayoutParams on
+        // the settings child caused ClassCastException on Start when
+        // ScrollView measured its child.
         val panelWidth = (screenWidth * 0.52f).toInt().coerceIn(280, 420)
         scroll.layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             0,
             1f
         )
-        settings.layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
+        settings.layoutParams = android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
         )
 
         val pParams = WindowManager.LayoutParams(
