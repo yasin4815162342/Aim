@@ -108,6 +108,22 @@ class MainActivity : ComponentActivity() {
         )
         root.addView(settings)
 
+        root.addView(TextView(this).apply {
+            text = "\nNew below: color-detection modes, the shared rail ghost ball " +
+                "(bank-shot ball size), the Automatic/Manual controller switch, and " +
+                "the ported manual CUE/TARGET controller's own settings. These are " +
+                "in-app only — the floating panel was already full, so they don't " +
+                "appear there."
+            textSize = 13f
+            setPadding(0, 16, 0, 16)
+        })
+
+        val extras = SettingsPanelBuilder.buildExtras(
+            this,
+            onChanged = { OverlayController.requestRedraw() }
+        )
+        root.addView(extras)
+
         setContentView(scroll)
     }
 }
