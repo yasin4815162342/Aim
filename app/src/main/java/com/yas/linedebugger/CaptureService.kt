@@ -81,9 +81,8 @@ class CaptureService : Service() {
                 refreshNotification()
                 return START_STICKY
             }
-            ACTION_TOGGLE_TWEAKS -> {
-                OverlayController.toggleTweakPanelVisible()
-                refreshNotification()
+            ACTION_TOGGLE_CALIBRATION -> {
+                OverlayController.toggleCalibrationMode()
                 return START_STICKY
             }
         }
@@ -129,10 +128,6 @@ class CaptureService : Service() {
         reader.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                // Controller mode: while Manual is active there's nothing
-                // for the auto-detected guideline to drive, so skip the
-                // (relatively expensive) crop + detect pass entirely.
-                if (Tunables.manualModeEnabled) return@setOnImageAvailableListener
                 val cx = OverlayController.circleCenterX
                 val cy = OverlayController.circleCenterY
                 val diam = Tunables.circleDiameter
@@ -197,11 +192,9 @@ class CaptureService : Service() {
         )
     }
 
-    // Notification with the same Show/Hide + Stop pattern as the Manual
-    // app, plus a Tweaks action to show/hide the floating tweak panel.
+    // Same Show/Hide + Stop pattern as the Manual app's notification.
     private fun buildNotification(): Notification {
         val visibilityLabel = if (OverlayController.isAimVisible()) "Hide" else "Show"
-        val tweaksLabel = if (OverlayController.isTweakPanelVisible()) "Tweaks: Hide" else "Tweaks: Show"
 
         val stopAction = Notification.Action.Builder(
             Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
@@ -213,11 +206,6 @@ class CaptureService : Service() {
             visibilityLabel, actionPendingIntent(ACTION_TOGGLE_VISIBILITY, 2)
         ).build()
 
-        val tweaksAction = Notification.Action.Builder(
-            Icon.createWithResource(this, android.R.drawable.ic_menu_edit),
-            tweaksLabel, actionPendingIntent(ACTION_TOGGLE_TWEAKS, 3)
-        ).build()
-
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_crop)
             .setContentTitle("LineDebugger running")
@@ -225,7 +213,6 @@ class CaptureService : Service() {
             .setOngoing(true)
             .addAction(stopAction)
             .addAction(visibilityAction)
-            .addAction(tweaksAction)
             .build()
     }
 
@@ -250,7 +237,7 @@ class CaptureService : Service() {
 
         const val ACTION_STOP = "com.yas.linedebugger.STOP"
         const val ACTION_TOGGLE_VISIBILITY = "com.yas.linedebugger.TOGGLE_VISIBILITY"
-        const val ACTION_TOGGLE_TWEAKS = "com.yas.linedebugger.TOGGLE_TWEAKS"
+        const val ACTION_TOGGLE_CALIBRATION = "com.yas.linedebugger.TOGGLE_CALIBRATION"
 
         fun start(context: Context, resultCode: Int, data: Intent) {
             val intent = Intent(context, CaptureService::class.java)
