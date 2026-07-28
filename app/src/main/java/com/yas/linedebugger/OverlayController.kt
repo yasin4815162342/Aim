@@ -14,9 +14,6 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -38,16 +35,6 @@ private const val DPAD_GAP_PX = 20f
 private const val DASH_LEN_PX = 26f
 private const val DASH_GAP_PX = 16f
 
-// Bug #5 (artificial-line clipping): the Ray Zone is the Ray Circle's
-// footprint expanded by this factor. No artificial line — main,
-// bank-reflected, or double — may be drawn inside it. Requested range was
-// 10-30% beyond the boundary; 1.20 (20%) is used here.
-private const val RAY_ZONE_EXCLUSION_FACTOR = 1.20f
-
-// Bug #3 (floating panel size): the panel's height used to be a flat
-// 900px. Halved per the bug report.
-private const val PANEL_HEIGHT_PX = 450
-
 object OverlayController {
 
     @Volatile var circleCenterX: Int = 400
@@ -65,11 +52,15 @@ object OverlayController {
     private var drawView: DrawOverlayView? = null
     private var handleView: View? = null
     private var handleParams: WindowManager.LayoutParams? = null
-    private var panelView: View? = null
-    private var panelParams: WindowManager.LayoutParams? = null
 
     private var screenWidth: Int = 0
     private var screenHeight: Int = 0
+
+    /** True between [attach] and [detach] — the only thing MainActivity
+     * needs to know before it's safe to send calibration/visibility
+     * actions to CaptureService without accidentally (re)starting it. */
+    @Volatile var isAttached: Boolean = false
+        private set
 
     // --- Table calibration state ---
     @Volatile var calibrationMode: Boolean = false
@@ -97,6 +88,7 @@ object OverlayController {
 
     fun attach(svc: Service) {
         service = svc
+        isAttached = true
         val wm = svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
 
@@ -120,16 +112,6 @@ object OverlayController {
         wm.addView(dView, drawParams)
 
         attachCircleHandle(svc, wm)
-        buildPanel(svc, wm)
-
-        // Feature: ported legacy manual CUE/TARGET controllers. Attached
-        // eagerly alongside the automatic controller (same pattern as
-        // everything else here) and kept in sync via
-        // applyControllerModeVisibility — exactly one of the two
-        // controllers is visible/touchable at a time, governed by
-        // Tunables.manualModeEnabled.
-        ManualController.attach(svc, wm, screenWidth, screenHeight)
-        applyControllerModeVisibility()
     }
 
     private fun attachCircleHandle(service: Service, wm: WindowManager) {
@@ -202,141 +184,6 @@ object OverlayController {
         drawView?.invalidate()
     }
 
-    /** Called by the settings UI when the shared rail-ghost-ball diameter
-     * slider moves (bug #3's ball size). Resizes the manual controller's
-     * cue/target handles to match, since they reuse this same value as
-     * their visual diameter — ported unchanged from the Manual app's
-     * ballSizePx, which served the identical dual purpose. */
-    fun onRailGhostBallDiameterChanged(newDiameterPx: Float) {
-        ManualController.onBallDiameterChanged(newDiameterPx)
-        drawView?.invalidate()
-    }
-
-    private fun buildPanel(service: Service, wm: WindowManager) {
-        val panel = LinearLayout(service).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(24, 24, 24, 24)
-            setBackgroundColor(0xCC000000.toInt())
-        }
-
-        val header = TextView(service).apply { text = "tweaks (drag here)"; setTextColor(Color.WHITE) }
-        panel.addView(header)
-
-        val scroll = ScrollView(service)
-        val settings = SettingsPanelBuilder.build(
-            service,
-            onChanged = { drawView?.invalidate() },
-            onCalibrate = { toggleCalibrationMode() }
-        )
-        scroll.addView(settings)
-        panel.addView(scroll)
-
-        // Bug #3: the panel was excessively large. Width used to be
-        // WRAP_CONTENT (whatever the content naturally measured out to) and
-        // height a flat 900px. Both dimensions are now cut to exactly half:
-        // measure the panel's true unconstrained width once, and use half
-        // of that plus half of the old fixed height (900 -> 450). The inner
-        // ScrollView still handles any overflow either way.
-        val unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-        panel.measure(unspecified, unspecified)
-        val naturalWidth = panel.measuredWidth.takeIf { it > 0 } ?: screenWidth
-        val halvedWidth = (naturalWidth / 2).coerceAtLeast(200)
-
-        val pParams = WindowManager.LayoutParams(
-            halvedWidth,
-            PANEL_HEIGHT_PX,
-            OVERLAY_TYPE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 0
-            y = 200
-        }
-        panelParams = pParams
-
-        var downRawX = 0f; var downRawY = 0f; var downX = 0; var downY = 0
-        header.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    downRawX = event.rawX; downRawY = event.rawY
-                    downX = pParams.x; downY = pParams.y
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    pParams.x = downX + (event.rawX - downRawX).toInt()
-                    pParams.y = downY + (event.rawY - downRawY).toInt()
-                    wm.updateViewLayout(panel, pParams)
-                    true
-                }
-                else -> false
-            }
-        }
-
-        panelView = panel
-        wm.addView(panel, pParams)
-        applyPanelVisibility(panel, pParams)
-    }
-
-    /** Bug #1: Hide must conceal the draggable Ray Circle controller too,
-     * not just the canvas-drawn aim line. Same VISIBLE/INVISIBLE +
-     * FLAG_NOT_TOUCHABLE pattern as [applyPanelVisibility], so a hidden
-     * controller also stops swallowing drags.
-     *
-     * Also folds in controller mode: the Ray Circle handle is only
-     * shown/touchable when aim is visible AND the automatic controller is
-     * the active one — while Manual mode is active it's fully out of the
-     * way, same as Hide, so it can never swallow a drag meant for the
-     * manual cue/target handles underneath it. */
-    private fun applyHandleVisibility() {
-        val wm = windowManager ?: return
-        val hView = handleView ?: return
-        val params = handleParams ?: return
-        if (Tunables.aimVisible && !Tunables.manualModeEnabled) {
-            hView.visibility = View.VISIBLE
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-        } else {
-            hView.visibility = View.INVISIBLE
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        }
-        runCatching { wm.updateViewLayout(hView, params) }
-    }
-
-    /** Applies controller-mode visibility to both controllers at once:
-     * exactly one of the automatic Ray Circle or the manual cue/target
-     * handles is visible/touchable, governed by Tunables.manualModeEnabled.
-     * Safe to call whether or not the overlay is attached yet. */
-    private fun applyControllerModeVisibility() {
-        applyHandleVisibility()
-        ManualController.applyVisibility()
-        drawView?.invalidate()
-    }
-
-    fun isManualModeEnabled(): Boolean = Tunables.manualModeEnabled
-
-    /** Switches between the Automatic (Ray Circle) and Manual (ported
-     * CUE/TARGET) controllers. Called from the in-app UI (MainActivity) —
-     * this is a mode switch, not a concurrent overlay, so the two never
-     * compete for the same drag input on screen. */
-    fun setManualModeEnabled(enabled: Boolean) {
-        if (Tunables.manualModeEnabled == enabled) return
-        Tunables.manualModeEnabled = enabled
-        AutoAimPrefs.setManualModeEnabled(enabled)
-        applyControllerModeVisibility()
-    }
-
-    private fun applyPanelVisibility(panel: View, params: WindowManager.LayoutParams) {
-        val wm = windowManager ?: return
-        if (Tunables.tweakPanelVisible) {
-            panel.visibility = View.VISIBLE
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-        } else {
-            panel.visibility = View.INVISIBLE
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        }
-        runCatching { wm.updateViewLayout(panel, params) }
-    }
-
     // ---------------- Notification-driven toggles ----------------
 
     /** Safe to call whether or not the overlay is currently attached — a
@@ -351,19 +198,7 @@ object OverlayController {
     fun toggleAimVisible() {
         Tunables.aimVisible = !Tunables.aimVisible
         AutoAimPrefs.setAimVisible(Tunables.aimVisible)
-        applyControllerModeVisibility()
-    }
-
-    fun isTweakPanelVisible(): Boolean = Tunables.tweakPanelVisible
-
-    fun toggleTweakPanelVisible() {
-        Tunables.tweakPanelVisible = !Tunables.tweakPanelVisible
-        AutoAimPrefs.setTweakPanelVisible(Tunables.tweakPanelVisible)
-        val panel = panelView
-        val params = panelParams
-        if (panel != null && params != null) {
-            applyPanelVisibility(panel, params)
-        }
+        drawView?.invalidate()
     }
 
     // ---------------- Table calibration ----------------
@@ -469,14 +304,13 @@ object OverlayController {
         val wm = windowManager ?: return
         drawView?.let { runCatching { wm.removeView(it) } }
         handleView?.let { runCatching { wm.removeView(it) } }
-        panelView?.let { runCatching { wm.removeView(it) } }
         edgeAHandle?.remove(); edgeAHandle = null
         edgeBHandle?.remove(); edgeBHandle = null
         edgeADPad?.remove(); edgeADPad = null
         edgeBDPad?.remove(); edgeBDPad = null
-        ManualController.detach()
-        drawView = null; handleView = null; panelView = null; windowManager = null
+        drawView = null; handleView = null; windowManager = null
         service = null
+        isAttached = false
         calibrationMode = false
         lockedResult = null
         lockHoldFrames = 0
@@ -783,23 +617,6 @@ class DrawOverlayView(context: Context) : View(context) {
             )
         }
 
-        // Bug #1: Hide must conceal every related piece together — the aim
-        // overlay, the Ray Circle controller ring, the Ray Monitor preview,
-        // and its status text. One early return here covers all four
-        // instead of each having its own (previously inconsistent) check.
-        // The draggable handle window itself is hidden separately in
-        // OverlayController.applyHandleVisibility, since it's a different
-        // window and isn't part of this canvas.
-        if (!Tunables.aimVisible) return
-
-        // Controller mode: while Manual is active, the automatic
-        // controller's Ray Circle, Ray Monitor preview, and auto-detected
-        // aim line all stay off-canvas so they don't visually clutter (or
-        // get confused with) the manual cue/target line below. The
-        // calibration rectangle above is intentionally exempt — table
-        // calibration is shared and useful in either mode.
-        if (Tunables.manualModeEnabled) return
-
         val cx = OverlayController.circleCenterX.toFloat()
         val cy = OverlayController.circleCenterY.toFloat()
         val half = Tunables.circleDiameter / 2f
@@ -833,6 +650,7 @@ class DrawOverlayView(context: Context) : View(context) {
             }
         }
 
+        if (!Tunables.aimVisible) return
         if (result == null || !result.hasLine) return
 
         val alphaScale = Tunables.autoAimOpacity / 255f
@@ -853,54 +671,40 @@ class DrawOverlayView(context: Context) : View(context) {
         val ay = cy - half + result.offsetY
         val dirX = cos(result.angleRad).toFloat()
         val dirY = sin(result.angleRad).toFloat()
-
-        // Bug #5: a single Ray Zone that every artificial line — main,
-        // bank-reflected, and doubles alike — gets clipped against, instead
-        // of only nudging the first segment's starting point away from it
-        // (which is what let post-bank "angle" segments render inside the
-        // zone). Both directions now start from the true anchor point; the
-        // clip in drawDirection removes whatever portion of any segment
-        // would fall inside the zone.
-        val zoneR = half * RAY_ZONE_EXCLUSION_FACTOR
+        val excludeRadius = half * 1.50f
 
         // Once calibrated, walls are the table edges — the ray has no
         // effect beyond them. Uncalibrated falls back to the full screen,
         // same as before.
-        //
-        // Bug #3 fix: the boundary used to be the raw calibrated table
-        // edge, so a bank-shot line terminated (and the ghost ball drew)
-        // right at the rail rather than where the ball's CENTER rests once
-        // its edge is flush against the rail. Inset by the shared ghost-
-        // ball radius, exactly like the Manual app always did — this is
-        // the "shared component" fix, so both controllers get physically
-        // identical ghost-ball placement and angle-line centering.
         val calibrated = Tunables.tableLeft >= 0f
         val left: Float; val top: Float; val right: Float; val bottom: Float
         if (calibrated) {
-            val halfBall = Tunables.railGhostBallDiameterPx / 2f
-            left = Tunables.tableLeft + halfBall
-            top = Tunables.tableTop + halfBall
-            right = Tunables.tableRight - halfBall
-            bottom = Tunables.tableBottom - halfBall
+            left = Tunables.tableLeft; top = Tunables.tableTop
+            right = Tunables.tableRight; bottom = Tunables.tableBottom
         } else {
             left = 0f; top = 0f; right = width.toFloat(); bottom = height.toFloat()
         }
 
-        drawDirection(canvas, ax, ay, dirX, dirY, left, top, right, bottom, cx, cy, zoneR)
-        drawDirection(canvas, ax, ay, -dirX, -dirY, left, top, right, bottom, cx, cy, zoneR)
+        drawDirection(
+            canvas,
+            ax + dirX * excludeRadius, ay + dirY * excludeRadius,
+            dirX, dirY, left, top, right, bottom
+        )
+        drawDirection(
+            canvas,
+            ax - dirX * excludeRadius, ay - dirY * excludeRadius,
+            -dirX, -dirY, left, top, right, bottom
+        )
     }
 
     /** Walks one direction out from the anchor point, reflecting off the
      * table walls up to Tunables.maxLines total segments — ported from the
-     * Manual app's per-direction bank-shot walk. Every segment (and its
-     * double, if enabled) is clipped against the Ray Zone circle
-     * (zoneCx/zoneCy/zoneR) before drawing — see bug #5. */
+     * Manual app's per-direction bank-shot walk. */
     private fun drawDirection(
         canvas: Canvas,
         startX: Float, startY: Float,
         initDx: Float, initDy: Float,
-        left: Float, top: Float, right: Float, bottom: Float,
-        zoneCx: Float, zoneCy: Float, zoneR: Float
+        left: Float, top: Float, right: Float, bottom: Float
     ) {
         var dx = initDx
         var dy = initDy
@@ -928,20 +732,16 @@ class DrawOverlayView(context: Context) : View(context) {
 
             val segBorder = if (segment == 0) borderPaint else bankBorderPaint
             val segCenter = if (segment == 0) centerPaint else bankCenterPaint
-            drawClippedSegLine(canvas, curX, curY, endX, endY, segBorder, zoneCx, zoneCy, zoneR)
-            drawClippedSegLine(canvas, curX, curY, endX, endY, segCenter, zoneCx, zoneCy, zoneR)
+            drawSegLine(canvas, curX, curY, endX, endY, segBorder)
+            drawSegLine(canvas, curX, curY, endX, endY, segCenter)
 
             if (Tunables.doubleLineEnabled) {
                 val segDouble = if (segment == 0) doublePaint else bankDoublePaint
                 val halfWidth = Tunables.doubleLineWidthPx / 2f
                 val px = -dy * halfWidth
                 val py = dx * halfWidth
-                for (piece in clipOutsideRayZone(curX + px, curY + py, endX + px, endY + py, zoneCx, zoneCy, zoneR)) {
-                    canvas.drawLine(piece[0], piece[1], piece[2], piece[3], segDouble)
-                }
-                for (piece in clipOutsideRayZone(curX - px, curY - py, endX - px, endY - py, zoneCx, zoneCy, zoneR)) {
-                    canvas.drawLine(piece[0], piece[1], piece[2], piece[3], segDouble)
-                }
+                canvas.drawLine(curX + px, curY + py, endX + px, endY + py, segDouble)
+                canvas.drawLine(curX - px, curY - py, endX - px, endY - py, segDouble)
             }
 
             remaining -= tDraw
@@ -949,17 +749,8 @@ class DrawOverlayView(context: Context) : View(context) {
 
             val hitVertical = tWall == tX
 
-            if (Tunables.bankMarkerEnabled && segment + 1 < maxLines &&
-                hypot(endX - zoneCx, endY - zoneCy) >= zoneR
-            ) {
-                // Bug #3: ring radius now matches the actual rail ghost
-                // ball (railGhostBallDiameterPx) used to inset the walls
-                // above, instead of a fixed 10px placeholder — so the
-                // drawn ball visually matches the geometry the angle line
-                // is actually reflecting against, and the line passes
-                // through its true geometric center (endX, endY).
-                val ghostR = Tunables.railGhostBallDiameterPx / 2f
-                canvas.drawCircle(endX, endY, ghostR - markerRing.strokeWidth / 2f, markerRing)
+            if (Tunables.bankMarkerEnabled && segment + 1 < maxLines) {
+                canvas.drawCircle(endX, endY, 10f, markerRing)
                 canvas.drawCircle(endX, endY, 4f, markerDot)
             }
 
@@ -967,59 +758,6 @@ class DrawOverlayView(context: Context) : View(context) {
             dx = reflected[0]; dy = reflected[1]
             curX = endX; curY = endY
         }
-    }
-
-    private fun drawClippedSegLine(
-        canvas: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, paint: Paint,
-        zoneCx: Float, zoneCy: Float, zoneR: Float
-    ) {
-        for (piece in clipOutsideRayZone(x1, y1, x2, y2, zoneCx, zoneCy, zoneR)) {
-            drawSegLine(canvas, piece[0], piece[1], piece[2], piece[3], paint)
-        }
-    }
-
-    /**
-     * Splits the segment [x1,y1]-[x2,y2] into the piece(s) that lie outside
-     * the circular Ray Zone (center zoneCx/zoneCy, radius zoneR), dropping
-     * whatever portion would fall inside it. Returns an empty list if the
-     * whole segment is inside, the segment unchanged (as a single piece) if
-     * it never touches the zone, or two pieces if it passes all the way
-     * through (entry side + exit side). This is the one unified rule bug #5
-     * asks for — every caller (main line, bank-reflected lines, doubles)
-     * routes through here, so nothing needs its own zone-avoidance logic.
-     */
-    private fun clipOutsideRayZone(
-        x1: Float, y1: Float, x2: Float, y2: Float,
-        zoneCx: Float, zoneCy: Float, zoneR: Float
-    ): List<FloatArray> {
-        val dx = x2 - x1
-        val dy = y2 - y1
-        val fx = x1 - zoneCx
-        val fy = y1 - zoneCy
-        val a = dx * dx + dy * dy
-        if (a < 1e-6f) {
-            return if (hypot(fx, fy) >= zoneR) listOf(floatArrayOf(x1, y1, x2, y2)) else emptyList()
-        }
-
-        val b = 2f * (fx * dx + fy * dy)
-        val c = fx * fx + fy * fy - zoneR * zoneR
-        val disc = b * b - 4f * a * c
-        if (disc < 0f) return listOf(floatArrayOf(x1, y1, x2, y2))
-
-        val sqrtDisc = kotlin.math.sqrt(disc)
-        val rawT1 = (-b - sqrtDisc) / (2f * a)
-        val rawT2 = (-b + sqrtDisc) / (2f * a)
-        // Intersection interval doesn't overlap [0,1] at all -> the circle
-        // doesn't actually clip this bounded segment; keep it whole.
-        if (rawT2 < 0f || rawT1 > 1f) return listOf(floatArrayOf(x1, y1, x2, y2))
-
-        val tLo = rawT1.coerceIn(0f, 1f)
-        val tHi = rawT2.coerceIn(0f, 1f)
-
-        val pieces = ArrayList<FloatArray>(2)
-        if (tLo > 0.0001f) pieces.add(floatArrayOf(x1, y1, x1 + dx * tLo, y1 + dy * tLo))
-        if (tHi < 0.9999f) pieces.add(floatArrayOf(x1 + dx * tHi, y1 + dy * tHi, x2, y2))
-        return pieces
     }
 
     private fun drawSegLine(canvas: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, paint: Paint) {
