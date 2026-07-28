@@ -7,35 +7,48 @@ import kotlin.math.hypot
 import kotlin.math.sin
 
 /**
- * Rail-reflection math — ported directly from the Manual app's
- * (AimOverlay) bank-shot correction curve so both apps behave identically
- * on a bank. Given an incoming travel direction and which pair of walls it
- * hit (vertical rail = left/right, horizontal rail = top/bottom), returns
- * the outgoing direction after applying the user's per-angle correction
- * curve, scaled by the rebound-intensity master slider.
+ * Rail-reflection math — shared by automatic ray and manual CUE/TARGET.
+ *
+ * Model (deliberately simple so slider values are never "swallowed"):
+ *  1. Pure geometric reflection (flip the wall-normal component).
+ *  2. Rotate that pure-reflected unit vector by `correctionDegrees`
+ *     (looked up from the user's curve at the impact angle, then scaled
+ *     by rebound intensity). Positive rotation opens the bounce toward
+ *     the tangent; negative closes it toward the normal (mirror-steep).
+ *
+ * Impact angle convention: 0° = grazing along the rail, 90° = dead-on
+ * into the cushion. Matches the slider labels ("Correction @ 45°" etc.).
  */
 object BankShot {
 
-    // 90 deg (dead-on hit) is always 0 correction and not user-adjustable.
-    // The remaining 17 control points are user-tunable via the sliders.
+    // 90 deg (dead-on) is always 0 correction and not user-adjustable.
+    // Remaining 17 control points match AutoAimPrefs.BANK_ANGLES order.
     private val angles = floatArrayOf(
         90f, 85f, 80f, 75f, 70f, 65f, 60f, 55f, 50f,
         45f, 40f, 35f, 30f, 25f, 20f, 15f, 10f, 5f
     )
+    // Live curve, already scaled by rebound intensity. Index 0 (90°) stays 0.
     private val corrections = FloatArray(angles.size)
 
-    /** rawCorrections must have angles.size - 1 entries, ordered to match
-     * angles[1..] (85 down to 5), already scaled by rebound intensity. */
-    fun updateCorrectionCurve(rawCorrections: FloatArray, reboundIntensityPercent: Float) {
-        val scale = reboundIntensityPercent / 100f
+    /**
+     * @param rawCorrections length = angles.size - 1, ordered 85° → 5°
+     * @param reboundIntensity -100..+100 → scale = intensity/100
+     *        (0 = pure reflection, negative inverts the whole curve)
+     */
+    fun updateCorrectionCurve(rawCorrections: FloatArray, reboundIntensity: Float) {
+        val scale = reboundIntensity / 100f
         corrections[0] = 0f
-        for (i in rawCorrections.indices) {
-            if (i + 1 < corrections.size) {
-                corrections[i + 1] = rawCorrections[i] * scale
-            }
+        val n = minOf(rawCorrections.size, corrections.size - 1)
+        for (i in 0 until n) {
+            corrections[i + 1] = rawCorrections[i] * scale
+        }
+        // Clear any leftover slots if raw was shorter than expected.
+        for (i in (n + 1) until corrections.size) {
+            corrections[i] = 0f
         }
     }
 
+    /** Piecewise-smooth lookup on the live curve. */
     private fun correctionDegrees(impactAngleDeg: Float): Float {
         if (impactAngleDeg >= angles[0]) return corrections[0]
         val last = angles.size - 1
@@ -45,6 +58,7 @@ object BankShot {
             val a1 = angles[i + 1]
             if (impactAngleDeg <= a0 && impactAngleDeg >= a1) {
                 val t = (a0 - impactAngleDeg) / (a0 - a1)
+                // Smoothstep so the curve doesn't kink at control points.
                 val eased = t * t * (3f - 2f * t)
                 return corrections[i] + (corrections[i + 1] - corrections[i]) * eased
             }
@@ -52,48 +66,77 @@ object BankShot {
         return corrections[last]
     }
 
+    /**
+     * Impact angle from the rail surface: 0° = grazing, 90° = head-on.
+     * Uses the *incoming* direction and which wall was hit.
+     */
     private fun impactAngleDeg(dx: Float, dy: Float, hitVertical: Boolean): Float {
         val normalComp = if (hitVertical) abs(dx) else abs(dy)
         val tangentComp = if (hitVertical) abs(dy) else abs(dx)
+        if (normalComp + tangentComp < 1e-8f) return 90f
         return Math.toDegrees(atan2(normalComp.toDouble(), tangentComp.toDouble())).toFloat()
     }
 
     /**
-     * Returns the reflected outgoing unit direction as [dx, dy], or null if
-     * the incoming direction was degenerate (shouldn't happen in practice —
-     * callers should just stop drawing that direction in that case).
+     * Returns the corrected outgoing unit direction [dx, dy], or null if
+     * the incoming direction is degenerate.
+     *
+     * Step 1 — pure reflection (flip the normal component of the wall).
+     * Step 2 — rotate that result by the curve's correction (degrees).
+     *          Rotation sense is chosen so positive correction increases
+     *          the angle between the outgoing ray and the wall normal
+     *          (opens the bank); negative decreases it (toward mirror).
      */
     fun reflect(dx: Float, dy: Float, hitVertical: Boolean): FloatArray? {
-        val impactAngle = impactAngleDeg(dx, dy, hitVertical)
+        val lenIn = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+        if (lenIn < 1e-4f) return null
 
-        val normalComp = if (hitVertical) dx else dy
-        val tangentComp = if (hitVertical) dy else dx
+        // --- 1. Pure geometric reflection ---
+        val pureDx: Float
+        val pureDy: Float
+        if (hitVertical) {
+            pureDx = -dx
+            pureDy = dy
+        } else {
+            pureDx = dx
+            pureDy = -dy
+        }
+        val pureLen = hypot(pureDx.toDouble(), pureDy.toDouble()).toFloat()
+        if (pureLen < 1e-4f) return null
+        val ux = pureDx / pureLen
+        val uy = pureDy / pureLen
 
-        val normalMag = abs(normalComp)
-        val tangentMag = abs(tangentComp)
+        // --- 2. Curve correction as an explicit 2D rotation ---
+        val impact = impactAngleDeg(dx, dy, hitVertical)
+        val corrDeg = correctionDegrees(impact)
+        if (abs(corrDeg) < 1e-4f) {
+            // Pure reflection, no curve applied.
+            return floatArrayOf(ux, uy)
+        }
 
-        val thetaFromNormal = Math.toDegrees(atan2(tangentMag.toDouble(), normalMag.toDouble())).toFloat()
+        // Rotation direction: we want +corr to open the angle from the
+        // wall normal. The wall normal pointing *into the table* is:
+        //   vertical hit from the right (dx>0 before bounce) → normal = (-1,0)
+        //   after pure reflect, outgoing is leftward.
+        // A positive (counter-clockwise) rotation of the outgoing vector
+        // increases the tangent component relative to that inward normal
+        // when the tangent sign matches the incoming tangent. Using a
+        // signed rotation based on the incoming tangent keeps the
+        // "open/close" sense consistent on every wall.
+        val incomingTangent = if (hitVertical) dy else dx
+        val sense = if (incomingTangent >= 0f) 1f else -1f
+        val rad = Math.toRadians((corrDeg * sense).toDouble())
+        val c = cos(rad).toFloat()
+        val s = sin(rad).toFloat()
+        // Standard 2D rotation: [c -s; s c]
+        val outDx = ux * c - uy * s
+        val outDy = ux * s + uy * c
 
-        val correction = correctionDegrees(impactAngle)
-        var correctedTheta = thetaFromNormal + correction
-        if (correctedTheta > 90f) correctedTheta = 90f
-        if (correctedTheta < 0f) correctedTheta = 0f
-
-        val correctedThetaRad = Math.toRadians(correctedTheta.toDouble())
-        val newNormalMag = cos(correctedThetaRad).toFloat()
-        val newTangentMag = sin(correctedThetaRad).toFloat()
-
-        val normalSign = if (normalComp < 0f) 1f else -1f
-        val tangentSign = if (tangentComp < 0f) -1f else 1f
-
-        val newNormalComp = normalSign * newNormalMag
-        val newTangentComp = tangentSign * newTangentMag
-
-        val newDx = if (hitVertical) newNormalComp else newTangentComp
-        val newDy = if (hitVertical) newTangentComp else newNormalComp
-
-        val len = hypot(newDx.toDouble(), newDy.toDouble()).toFloat()
-        if (len < 1e-4f) return null
-        return floatArrayOf(newDx / len, newDy / len)
+        val outLen = hypot(outDx.toDouble(), outDy.toDouble()).toFloat()
+        if (outLen < 1e-4f) return null
+        return floatArrayOf(outDx / outLen, outDy / outLen)
     }
+
+    /** Debug/test helper: current live correction at a given impact angle. */
+    fun debugCorrectionAt(impactAngleDeg: Float): Float = correctionDegrees(impactAngleDeg)
 }

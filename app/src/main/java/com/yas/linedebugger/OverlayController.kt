@@ -51,9 +51,9 @@ private const val MANUAL_HANDLE_HITBOX_PX = 250
 // 10-30% beyond the boundary; 1.20 (20%) is used here.
 private const val RAY_ZONE_EXCLUSION_FACTOR = 1.20f
 
-// Bug #3 (floating panel size): the panel's height used to be a flat
-// 900px. Halved per the bug report.
-private const val PANEL_HEIGHT_PX = 450
+// Floating tweak panel: almost full phone width, modest height so it
+// doesn't eat the whole screen while still showing several sliders.
+private const val PANEL_HEIGHT_PX = 520
 
 object OverlayController {
 
@@ -248,17 +248,14 @@ object OverlayController {
         scroll.addView(settings)
         panel.addView(scroll)
 
-        // Floating panel width: cap to ~52% of screen so the full panel
-        // (including correction ↑/↓ buttons) stays visible on narrow
-        // devices like the Galaxy A32 (~720–1080px wide). Content is
-        // forced to MATCH_PARENT so seekbar rows shrink instead of
-        // clipping the right-side buttons.
+        // Floating panel: almost phone-width (small side margins) so sliders
+        // and ↑/↓ correction buttons are usable. Height stays modest.
         //
         // CRITICAL: ScrollView's child must use FrameLayout LayoutParams
         // (ScrollView extends FrameLayout). LinearLayout.LayoutParams on
         // the settings child caused ClassCastException on Start when
         // ScrollView measured its child.
-        val panelWidth = (screenWidth * 0.52f).toInt().coerceIn(280, 420)
+        val panelWidth = (screenWidth * 0.94f).toInt().coerceAtLeast(320)
         scroll.layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             0,
@@ -1111,10 +1108,15 @@ class DrawOverlayView(context: Context) : View(context) {
 
         if (Tunables.rayMonitorEnabled) {
             if (result != null && result.previewArgb.isNotEmpty()) {
-                val size = Tunables.circleDiameter
-                if (result.previewArgb.size == size * size) {
-                    val bmp = Bitmap.createBitmap(result.previewArgb, size, size, Bitmap.Config.ARGB_8888)
-                    val r = RectF(20f, 84f, 20f + size * 3f, 84f + size * 3f)
+                // Preview may be at capture-scale resolution (half native);
+                // derive side length from the array, display scaled up to
+                // roughly 3× the on-screen circle diameter for readability.
+                val n = result.previewArgb.size
+                val side = kotlin.math.sqrt(n.toDouble()).toInt()
+                if (side * side == n && side > 0) {
+                    val bmp = Bitmap.createBitmap(result.previewArgb, side, side, Bitmap.Config.ARGB_8888)
+                    val disp = (Tunables.circleDiameter * 3f).coerceAtLeast(120f)
+                    val r = RectF(20f, 84f, 20f + disp, 84f + disp)
                     canvas.drawRect(r, bgPaint)
                     canvas.drawBitmap(bmp, null, r, null)
                 }
@@ -1265,7 +1267,8 @@ class DrawOverlayView(context: Context) : View(context) {
             remaining -= tDraw
             if (tDraw < tWall - 0.01f) break
 
-            val hitVertical = tWall == tX
+            // Prefer vertical when both are essentially equal (corner), same as manual path.
+            val hitVertical = abs(tWall - tX) <= abs(tWall - tY)
 
             if (Tunables.bankMarkerEnabled && segment + 1 < maxLines &&
                 hypot(endX - zoneCx, endY - zoneCy) >= zoneR

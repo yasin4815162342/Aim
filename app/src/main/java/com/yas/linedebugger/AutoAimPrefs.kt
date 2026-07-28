@@ -188,17 +188,23 @@ object AutoAimPrefs {
     const val GHOST_BALL_DIAMETER_MAX_PX = 120f
     const val DEFAULT_GHOST_BALL_DIAMETER_PX = 60f
 
-    const val BANK_CORRECTION_MIN = -20f
-    const val BANK_CORRECTION_MAX = 25f
-    const val REBOUND_INTENSITY_MIN = 0f
-    const val REBOUND_INTENSITY_MAX = 200f
+    // Wide range so bank angle tweaks have a real, visible effect (not baby steps).
+    // Negative = toward mirror / steeper bounce; positive = open the angle.
+    const val BANK_CORRECTION_MIN = -60f
+    const val BANK_CORRECTION_MAX = 60f
+    // Rebound intensity is a signed master scale: -100..+100.
+    // Negative inverts the whole correction curve (negative-mirror mode).
+    // 0 = pure geometric reflection (no curve). ±100 = full curve strength.
+    const val REBOUND_INTENSITY_MIN = -100f
+    const val REBOUND_INTENSITY_MAX = 100f
     const val DEFAULT_REBOUND_INTENSITY = 100f
 
-    // Angle control points + defaults — identical curve to the Manual app.
+    // Angle control points + defaults. Mid-angle banks (80→60°) default
+    // negative so the first usable curve already leans toward mirror.
     val BANK_ANGLES = floatArrayOf(85f, 80f, 75f, 70f, 65f, 60f, 55f, 50f, 45f, 40f, 35f, 30f, 25f, 20f, 15f, 10f, 5f)
     val DEFAULT_BANK_CORRECTIONS = floatArrayOf(
-        0.15f, 0.4f, 0.7f, 1.1f, 1.4f, 2.1f, 2.7f, 3.7f, 4.6f,
-        6.3f, 7.9f, 10.3f, 12.6f, 16.3f, 20f, 20f, 20f
+        -2f, -5f, -8f, -10f, -12f, -12f, -8f, -4f, 0f,
+        3f, 6f, 10f, 14f, 18f, 22f, 25f, 28f
     )
 
     const val DEFAULT_AIM_VISIBLE = true
@@ -319,7 +325,10 @@ object AutoAimPrefs {
     fun setBankCorrection(index: Int, v: Float) { prefs.edit().putFloat(KEY_BANK_CORRECTION_PREFIX + index, v).apply() }
 
     fun getReboundIntensity() = prefs.getFloat(KEY_REBOUND_INTENSITY, DEFAULT_REBOUND_INTENSITY)
-    fun setReboundIntensity(v: Float) { prefs.edit().putFloat(KEY_REBOUND_INTENSITY, v).apply() }
+        .coerceIn(REBOUND_INTENSITY_MIN, REBOUND_INTENSITY_MAX)
+    fun setReboundIntensity(v: Float) {
+        prefs.edit().putFloat(KEY_REBOUND_INTENSITY, v.coerceIn(REBOUND_INTENSITY_MIN, REBOUND_INTENSITY_MAX)).apply()
+    }
 
     fun getTableLeft() = prefs.getFloat(KEY_TABLE_LEFT, -1f)
     fun getTableTop() = prefs.getFloat(KEY_TABLE_TOP, -1f)

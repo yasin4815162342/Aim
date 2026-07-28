@@ -40,6 +40,21 @@ class CaptureService : Service() {
     private var processing = false
     private val minFrameIntervalMs = 33L
 
+    // Full-screen overlay coordinates → capture-buffer scale.
+    // Capture runs at CAPTURE_SCALE of native resolution to slash GPU/memory
+    // bandwidth (biggest source of the "phone turns into 20 fps" problem).
+    // Crop centers from OverlayController are in full-screen pixels and are
+    // scaled down when reading the buffer.
+    private var captureScale = 1f
+    private var captureWidth = 0
+    private var captureHeight = 0
+    private var screenWidth = 0
+    private var screenHeight = 0
+
+    // Reused across frames to avoid per-frame allocations in extractCrop.
+    private var rowBytes: ByteArray = ByteArray(0)
+    private var cropPixels: IntArray = IntArray(0)
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             // Capture died. Keep overlays alive. Only release projection resources.
@@ -117,16 +132,26 @@ class CaptureService : Service() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val realMetrics = DisplayMetrics()
         wm.defaultDisplay.getRealMetrics(realMetrics)
-        val width = realMetrics.widthPixels
-        val height = realMetrics.heightPixels
+        screenWidth = realMetrics.widthPixels
+        screenHeight = realMetrics.heightPixels
         val density = realMetrics.densityDpi
 
-        val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        // Downscale capture. Half-res ≈ 4× less pixels/bandwidth; line
+        // detection only needs the small Ray-Zone crop anyway, so sub-pixel
+        // accuracy is not required. Keeps the phone usable at ~30 fps.
+        captureScale = CAPTURE_SCALE
+        captureWidth = (screenWidth * captureScale).toInt().coerceAtLeast(160)
+        captureHeight = (screenHeight * captureScale).toInt().coerceAtLeast(160)
+        // Density for the virtual display: keep proportional so the surface
+        // isn't forced through an extra resampler path on some OEMs.
+        val captureDensity = (density * captureScale).toInt().coerceAtLeast(120)
+
+        val reader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 2)
         imageReader = reader
 
         virtualDisplay = projection.createVirtualDisplay(
             "line-debugger-capture",
-            width, height, density,
+            captureWidth, captureHeight, captureDensity,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             reader.surface, null, bgHandler
         )
@@ -144,12 +169,26 @@ class CaptureService : Service() {
             try {
                 val cx = OverlayController.circleCenterX
                 val cy = OverlayController.circleCenterY
-                // Clamp diam so crop never exceeds the captured image (prevents BufferUnderflow).
-                val diam = Tunables.circleDiameter.coerceIn(1, minOf(image.width, image.height).coerceAtLeast(1))
-                val pixels = extractCrop(image, cx, cy, diam)
-                if (pixels.size == diam * diam) {
-                    val result = LineDetector.detect(pixels, diam)
-                    mainHandler.post { OverlayController.updateResult(result) }
+                // Circle diameter is in full-screen pixels; crop size in the
+                // downscaled buffer is diameter * captureScale.
+                val diamScreen = Tunables.circleDiameter.coerceIn(1, minOf(screenWidth, screenHeight).coerceAtLeast(1))
+                val diamCap = (diamScreen * captureScale).toInt().coerceIn(8, minOf(image.width, image.height).coerceAtLeast(8))
+                val pixels = extractCrop(image, cx, cy, diamCap)
+                if (pixels != null && pixels.size >= diamCap * diamCap) {
+                    // Detect on the (smaller) capture-space crop. Angle is
+                    // scale-invariant; offsets/width are scaled back to
+                    // full-screen pixels for the overlay.
+                    val result = LineDetector.detect(pixels, diamCap)
+                    val scaled = if (result.hasLine && captureScale > 0f && captureScale != 1f) {
+                        result.copy(
+                            widthPx = result.widthPx / captureScale,
+                            offsetX = result.offsetX / captureScale,
+                            offsetY = result.offsetY / captureScale
+                        )
+                    } else {
+                        result
+                    }
+                    mainHandler.post { OverlayController.updateResult(scaled) }
                 }
             } catch (t: Throwable) {
                 // Never let a detection bug kill the whole process / service.
@@ -164,38 +203,62 @@ class CaptureService : Service() {
         return START_STICKY
     }
 
-    private fun extractCrop(image: Image, cx: Int, cy: Int, diam: Int): IntArray {
+    /**
+     * Extract a square crop centered on (cx,cy) in *full-screen* coordinates.
+     * Buffer is at captureScale; diamCap is the side length in buffer pixels.
+     * Returns null on failure; reuses [cropPixels] / [rowBytes] buffers.
+     */
+    private fun extractCrop(
+        image: Image,
+        cxScreen: Int,
+        cyScreen: Int,
+        diamCap: Int
+    ): IntArray? {
         val plane = image.planes[0]
         val buffer = plane.buffer
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride.coerceAtLeast(1)
         val imgW = image.width
         val imgH = image.height
-        val safeDiam = diam.coerceIn(1, minOf(imgW, imgH).coerceAtLeast(1))
-        val half = safeDiam / 2
 
-        val maxStartX = (imgW - safeDiam).coerceAtLeast(0)
-        val maxStartY = (imgH - safeDiam).coerceAtLeast(0)
-        val startX = (cx - half).coerceIn(0, maxStartX)
-        val startY = (cy - half).coerceIn(0, maxStartY)
+        val halfCap = diamCap / 2
+        // Map full-screen center into capture-buffer coordinates.
+        val cxCap = (cxScreen * captureScale).toInt()
+        val cyCap = (cyScreen * captureScale).toInt()
 
-        val out = IntArray(safeDiam * safeDiam)
-        val rowBytes = ByteArray(rowStride)
-        val maxColBytes = (startX + safeDiam) * pixelStride
-        for (row in 0 until safeDiam) {
-            val y = startY + row
+        val maxStartX = (imgW - diamCap).coerceAtLeast(0)
+        val maxStartY = (imgH - diamCap).coerceAtLeast(0)
+        val startX = (cxCap - halfCap).coerceIn(0, maxStartX)
+        val startY = (cyCap - halfCap).coerceIn(0, maxStartY)
+
+        val need = diamCap * diamCap
+        if (cropPixels.size < need) cropPixels = IntArray(need)
+        if (rowBytes.size < rowStride) rowBytes = ByteArray(rowStride)
+
+        val out = cropPixels
+        val row = rowBytes
+        val bytesPerPixel = pixelStride
+        val endColByte = (startX + diamCap) * bytesPerPixel
+
+        for (r in 0 until diamCap) {
+            val y = startY + r
             if (y >= imgH) break
             val pos = y * rowStride
             if (pos + rowStride > buffer.capacity()) break
             buffer.position(pos)
-            buffer.get(rowBytes, 0, rowStride)
-            for (col in 0 until safeDiam) {
-                val offset = (startX + col) * pixelStride
-                if (offset + 2 >= rowStride) break
-                val r = rowBytes[offset].toInt() and 0xFF
-                val g = rowBytes[offset + 1].toInt() and 0xFF
-                val b = rowBytes[offset + 2].toInt() and 0xFF
-                out[row * safeDiam + col] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            // Only pull the bytes we need for this crop row when the crop
+            // is much narrower than the full frame (typical).
+            val readLen = if (endColByte in 1 until rowStride) endColByte else rowStride
+            if (pos + readLen > buffer.capacity()) break
+            buffer.get(row, 0, readLen)
+            val outRow = r * diamCap
+            for (c in 0 until diamCap) {
+                val offset = (startX + c) * bytesPerPixel
+                if (offset + 2 >= readLen) break
+                val red = row[offset].toInt() and 0xFF
+                val green = row[offset + 1].toInt() and 0xFF
+                val blue = row[offset + 2].toInt() and 0xFF
+                out[outRow + c] = (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
             }
         }
         buffer.rewind()
@@ -270,6 +333,9 @@ class CaptureService : Service() {
         private const val EXTRA_DATA = "data"
         private const val NOTIF_ID = 1
         private const val CHANNEL_ID = "line_debugger_capture"
+
+        /** Capture buffer scale vs native resolution. 0.5 ≈ 4× fewer pixels. */
+        private const val CAPTURE_SCALE = 0.5f
 
         const val ACTION_STOP = "com.yas.linedebugger.STOP"
         const val ACTION_TOGGLE_VISIBILITY = "com.yas.linedebugger.TOGGLE_VISIBILITY"
