@@ -341,7 +341,7 @@ object SettingsPanelBuilder {
         }
 
         sectionLabel("Bank Correction Curve")
-        hint("Range: -50° to 40°. 90° (dead-on) is fixed at 0 and not adjustable.")
+        hint("Range: -20° to +25°. 90° (dead-on) is fixed at 0 and not adjustable.")
         val bankStepSize = 0.1f
         val bankSteps = Math.round((AutoAimPrefs.BANK_CORRECTION_MAX - AutoAimPrefs.BANK_CORRECTION_MIN) / bankStepSize)
         for (i in AutoAimPrefs.BANK_ANGLES.indices) {

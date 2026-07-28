@@ -34,6 +34,11 @@ class CaptureService : Service() {
     private var bgHandler: Handler? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isCapturing = false
+    // Cap detection to ~30 fps and skip frames while a detect is still running
+    // so the bg thread never builds a multi-frame backlog (root of lag/jagged motion).
+    private var lastProcessUptimeMs = 0L
+    private var processing = false
+    private val minFrameIntervalMs = 33L
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -127,7 +132,15 @@ class CaptureService : Service() {
         )
 
         reader.setOnImageAvailableListener({ r ->
+            // Always drain to latest frame so the queue never piles up.
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+            val now = android.os.SystemClock.uptimeMillis()
+            if (processing || now - lastProcessUptimeMs < minFrameIntervalMs) {
+                image.close()
+                return@setOnImageAvailableListener
+            }
+            processing = true
+            lastProcessUptimeMs = now
             try {
                 val cx = OverlayController.circleCenterX
                 val cy = OverlayController.circleCenterY
@@ -137,6 +150,7 @@ class CaptureService : Service() {
                 mainHandler.post { OverlayController.updateResult(result) }
             } finally {
                 image.close()
+                processing = false
             }
         }, bgHandler)
 

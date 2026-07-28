@@ -188,8 +188,8 @@ object AutoAimPrefs {
     const val GHOST_BALL_DIAMETER_MAX_PX = 120f
     const val DEFAULT_GHOST_BALL_DIAMETER_PX = 60f
 
-    const val BANK_CORRECTION_MIN = -50f
-    const val BANK_CORRECTION_MAX = 40f
+    const val BANK_CORRECTION_MIN = -20f
+    const val BANK_CORRECTION_MAX = 25f
     const val REBOUND_INTENSITY_MIN = 0f
     const val REBOUND_INTENSITY_MAX = 200f
     const val DEFAULT_REBOUND_INTENSITY = 100f
@@ -315,7 +315,7 @@ object AutoAimPrefs {
     fun getGhostBallDiameterPx() = prefs.getFloat(KEY_GHOST_BALL_DIAMETER_PX, DEFAULT_GHOST_BALL_DIAMETER_PX)
     fun setGhostBallDiameterPx(v: Float) { prefs.edit().putFloat(KEY_GHOST_BALL_DIAMETER_PX, v).apply() }
 
-    fun getBankCorrection(index: Int) = prefs.getFloat(KEY_BANK_CORRECTION_PREFIX + index, DEFAULT_BANK_CORRECTIONS[index])
+    fun getBankCorrection(index: Int) = prefs.getFloat(KEY_BANK_CORRECTION_PREFIX + index, DEFAULT_BANK_CORRECTIONS[index]).coerceIn(BANK_CORRECTION_MIN, BANK_CORRECTION_MAX)
     fun setBankCorrection(index: Int, v: Float) { prefs.edit().putFloat(KEY_BANK_CORRECTION_PREFIX + index, v).apply() }
 
     fun getReboundIntensity() = prefs.getFloat(KEY_REBOUND_INTENSITY, DEFAULT_REBOUND_INTENSITY)

@@ -67,6 +67,14 @@ object OverlayController {
     private const val LOCK_HOLD = 6            // frames to keep a good lock on the *same* line
     private const val ANGLE_TOL = 0.18         // ~10 degrees - considered "same line"
 
+    // Temporal EMA on displayed angle / centroid — kills per-frame jitter from
+    // pixel noise without adding multi-second lag. Alpha closer to 1 = snappier.
+    private const val SMOOTH_ALPHA = 0.42
+    private var smoothAngle: Double = 0.0
+    private var smoothOffX: Float = 0f
+    private var smoothOffY: Float = 0f
+    private var smoothInit = false
+
     private var service: Service? = null
     private var windowManager: WindowManager? = null
     private var drawView: DrawOverlayView? = null
@@ -492,6 +500,7 @@ object OverlayController {
                 lockHoldFrames--
             } else {
                 lockedResult = null
+                smoothInit = false
             }
         } else {
             val angleChangedALot = prev != null && prev.hasLine &&
@@ -505,10 +514,37 @@ object OverlayController {
             if (accept) {
                 lockedResult = result
                 lockHoldFrames = if (angleChangedALot) 3 else LOCK_HOLD
+                if (angleChangedALot) smoothInit = false  // snap on big direction change
             }
         }
 
-        lastResult = lockedResult ?: result
+        val base = lockedResult ?: result
+        if (base.hasLine) {
+            if (!smoothInit) {
+                smoothAngle = base.angleRad
+                smoothOffX = base.offsetX
+                smoothOffY = base.offsetY
+                smoothInit = true
+            } else {
+                // Shortest-path angle blend on the circle (period π for undirected lines)
+                var d = base.angleRad - smoothAngle
+                while (d > Math.PI / 2) d -= Math.PI
+                while (d < -Math.PI / 2) d += Math.PI
+                smoothAngle += SMOOTH_ALPHA * d
+                // Keep in (-π/2, π/2] for stability
+                if (smoothAngle > Math.PI / 2) smoothAngle -= Math.PI
+                if (smoothAngle <= -Math.PI / 2) smoothAngle += Math.PI
+                smoothOffX += (SMOOTH_ALPHA * (base.offsetX - smoothOffX)).toFloat()
+                smoothOffY += (SMOOTH_ALPHA * (base.offsetY - smoothOffY)).toFloat()
+            }
+            lastResult = base.copy(
+                angleRad = smoothAngle,
+                offsetX = smoothOffX,
+                offsetY = smoothOffY
+            )
+        } else {
+            lastResult = base
+        }
         drawView?.invalidate()
     }
 

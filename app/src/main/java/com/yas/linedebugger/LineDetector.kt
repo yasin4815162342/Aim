@@ -1,10 +1,7 @@
 // ============================================================
 // FILE: app/src/main/java/com/yas/linedebugger/LineDetector.kt
-// FULL REPLACEMENT – type-fixed + aggressive circle kill + stable elongated-line only
-// Bug #2: candidate-pixel classification is now pluggable (three modes —
-// see classifyCandidates below) instead of a single hard-coded green/RGB
-// heuristic. Everything downstream (ball-shape erosion, circularity
-// blob-killer, weighted PCA fit, outlier trim, scoring) is unchanged.
+// Optimized: separable O(n·r) erode/dilate, best-component selection
+// (Scenario A partial-ball rejection), reduced allocations.
 // ============================================================
 package com.yas.linedebugger
 
@@ -29,11 +26,39 @@ data class DetectionResult(
 
 object LineDetector {
 
+    // Reusable scratch buffers — detect() is single-threaded on bgHandler.
+    private var candidateBuf: BooleanArray = BooleanArray(0)
+    private var scratchA: BooleanArray = BooleanArray(0)
+    private var scratchB: BooleanArray = BooleanArray(0)
+    private var scratchTmp: BooleanArray = BooleanArray(0)
+    private var scratchVisited: BooleanArray = BooleanArray(0)
+    private var qxBuf: IntArray = IntArray(0)
+    private var qyBuf: IntArray = IntArray(0)
+    private var brightnessBuf: IntArray = IntArray(0)
+    private var rejectedRailBuf: BooleanArray = BooleanArray(0)
+
+    private fun ensureScratch(n: Int) {
+        if (candidateBuf.size < n) {
+            candidateBuf = BooleanArray(n)
+            scratchA = BooleanArray(n)
+            scratchB = BooleanArray(n)
+            scratchTmp = BooleanArray(n)
+            scratchVisited = BooleanArray(n)
+            qxBuf = IntArray(n)
+            qyBuf = IntArray(n)
+            brightnessBuf = IntArray(n)
+            rejectedRailBuf = BooleanArray(n)
+        }
+    }
+
     fun detect(pixels: IntArray, size: Int): DetectionResult {
         val n = size * size
-        val isCandidate = BooleanArray(n)
-        val rejectedAsRail = BooleanArray(n)  // preview-only: which background class caught it
-        val brightness = IntArray(n)
+        ensureScratch(n)
+        val isCandidate = candidateBuf
+        val rejectedAsRail = rejectedRailBuf
+        val brightness = brightnessBuf
+        java.util.Arrays.fill(isCandidate, 0, n, false)
+        java.util.Arrays.fill(rejectedAsRail, 0, n, false)
 
         val mode = Tunables.detectionMode
 
@@ -45,9 +70,6 @@ object LineDetector {
             val bright = maxOf(r, g, b)
             brightness[i] = bright
 
-            // --- Legacy classifier: green-hue-vs-brightness heuristic,
-            // byte-for-byte the original algorithm. Only source of truth
-            // in LEGACY mode; also checked (OR'd in) by HYBRID mode. ---
             var legacyCandidate = false
             if (mode == AutoAimPrefs.DETECTION_MODE_LEGACY || mode == AutoAimPrefs.DETECTION_MODE_HYBRID) {
                 val isGreenHue = (g - r) > Tunables.greenDiff && (g - b) > Tunables.greenDiff
@@ -55,14 +77,6 @@ object LineDetector {
                 legacyCandidate = !isFelt && bright > Tunables.minBrightness
             }
 
-            // --- HSV felt-distance classifier: a pixel is background
-            // (felt, or optionally rail/cushion) only if it's close to
-            // that reference in hue AND saturation AND value; differing
-            // enough in any ONE of the three dimensions is enough to
-            // count it as a candidate. That's what recovers a green
-            // guideline (same hue as felt, different value/sat), a brown
-            // one (different hue entirely), and yellow (ditto) without
-            // needing a per-color special case. ---
             var hsvCandidate = false
             var railRejected = false
             if (mode == AutoAimPrefs.DETECTION_MODE_HSV || mode == AutoAimPrefs.DETECTION_MODE_HYBRID) {
@@ -88,69 +102,59 @@ object LineDetector {
             isCandidate[i] = when (mode) {
                 AutoAimPrefs.DETECTION_MODE_LEGACY -> legacyCandidate
                 AutoAimPrefs.DETECTION_MODE_HYBRID -> legacyCandidate || hsvCandidate
-                else -> hsvCandidate // DETECTION_MODE_HSV
+                else -> hsvCandidate
             }
             rejectedAsRail[i] = !isCandidate[i] && railRejected
         }
 
-        // --- Stage 1: classic morphological ball removal ---
-        val ballCore = erode(isCandidate, size, Tunables.ballErodeRadius)
-        val ballGrown = dilate(ballCore, size, Tunables.ballErodeRadius + Tunables.ballDilateGrow)
-        var lineMask = BooleanArray(n) { isCandidate[it] && !ballGrown[it] }
+        // --- Stage 1: separable morphological ball removal (O(n·r) not O(n·r²)) ---
+        val ballCore = erodeSeparable(isCandidate, size, Tunables.ballErodeRadius, scratchB)
+        val growR = Tunables.ballErodeRadius + Tunables.ballDilateGrow
+        val ballGrown = dilateSeparable(ballCore, size, growR, scratchA)
+
+        // lineMask into scratchB (ballCore no longer needed)
+        val lineMask = scratchB
+        for (i in 0 until n) {
+            lineMask[i] = isCandidate[i] && !ballGrown[i]
+        }
 
         // --- Stage 2: kill remaining circle-like blobs ---
-        lineMask = killCircularBlobs(lineMask, size)
+        killCircularBlobsInPlace(lineMask, size)
 
         // Preview
         val preview = IntArray(n)
         for (i in 0 until n) {
             preview[i] = when {
-                lineMask[i] -> 0xFFFF00FF.toInt()          // magenta = accepted line
-                ballGrown[i] -> 0xFF3060FF.toInt()         // blue   = morphological ball
-                isCandidate[i] -> 0xFFFFFF00.toInt()       // yellow = candidate killed by shape, not color
-                rejectedAsRail[i] -> 0xFF6B4423.toInt()    // dim brown = rejected as rail/cushion (HSV/Hybrid only)
-                else -> 0xFF104010.toInt()                  // dim green = rejected as felt
+                lineMask[i] -> 0xFFFF00FF.toInt()
+                ballGrown[i] -> 0xFF3060FF.toInt()
+                isCandidate[i] -> 0xFFFFFF00.toInt()
+                rejectedAsRail[i] -> 0xFF6B4423.toInt()
+                else -> 0xFF104010.toInt()
             }
         }
 
-        val xs = ArrayList<Int>(n / 4)
-        val ys = ArrayList<Int>(n / 4)
-        val ws = ArrayList<Float>(n / 4)
-        var totalW = 0f
-        for (row in 0 until size) for (col in 0 until size) {
-            val i = row * size + col
-            if (lineMask[i]) {
-                val w = brightness[i].toFloat().coerceAtLeast(1f)
-                xs.add(col)
-                ys.add(row)
-                ws.add(w)
-                totalW += w
-            }
-        }
-
-        if (xs.size < Tunables.minLinePixels || totalW < 1f) {
+        // --- Stage 3: pick the single strongest elongated component (Scenario A) ---
+        val best = selectBestLineComponent(lineMask, brightness, size)
+        if (best == null) {
             return DetectionResult(hasLine = false, previewArgb = preview)
         }
 
-        // Weighted centroid + PCA angle
-        var meanX = 0.0
-        var meanY = 0.0
-        for (i in xs.indices) {
-            meanX += xs[i] * ws[i]
-            meanY += ys[i] * ws[i]
-        }
-        meanX /= totalW
-        meanY /= totalW
+        val xs = best.xs
+        val ys = best.ys
+        val ws = best.ws
+        var totalW = best.totalW
+        var meanX = best.meanX
+        var meanY = best.meanY
+        var angle = best.angle
 
-        var angle = weightedFitAngle(xs, ys, ws, meanX, meanY)
-
-        // Two rounds of outlier trim + refit
+        // Two rounds of outlier trim + refit on the chosen component only
         repeat(2) {
             val (tx, ty, tw) = trimOutliersWeighted(xs, ys, ws, angle, meanX, meanY)
             if (tx.size >= Tunables.minLinePixels) {
                 xs.clear(); ys.clear(); ws.clear()
                 xs.addAll(tx); ys.addAll(ty); ws.addAll(tw)
-                totalW = ws.sum()
+                totalW = 0f
+                for (w in ws) totalW += w
                 meanX = 0.0; meanY = 0.0
                 for (i in xs.indices) {
                     meanX += xs[i] * ws[i]
@@ -162,7 +166,6 @@ object LineDetector {
             }
         }
 
-        // Final quality metrics
         val dirX = cos(angle)
         val dirY = sin(angle)
         var sqResidual = 0.0
@@ -170,14 +173,10 @@ object LineDetector {
             val perp = -(xs[i] - meanX) * dirY + (ys[i] - meanY) * dirX
             sqResidual += perp * perp
         }
-        val rms = sqrt(sqResidual / xs.size)                 // Double
+        val rms = sqrt(sqResidual / xs.size)
         val widthEstimate = (rms * 3.46).toFloat().coerceAtLeast(1f)
-
-        // Score: prefer many inliers + low residual (higher is better)
-        // Explicit Float conversion to avoid type mismatch
         val score = (xs.size.toFloat() / (1f + rms.toFloat() * 2f)).coerceAtLeast(0f)
 
-        // Average colour of surviving pixels
         var rSum = 0; var gSum = 0; var bSum = 0
         for (i in xs.indices) {
             val p = pixels[ys[i] * size + xs[i]]
@@ -202,24 +201,150 @@ object LineDetector {
     }
 
     // ------------------------------------------------------------------
-    // Color classification helpers (bug #2)
+    // Best elongated component (Scenario A)
     // ------------------------------------------------------------------
 
-    /** RGB (0-255 each) -> HSV. Hue in degrees [0,360). Saturation and
-     * value are both scaled to [0,255], not the more common [0,1], so
-     * they sit on the same scale as the app's existing brightness-style
-     * sliders and can share UI/int plumbing with them. */
+    private data class CompResult(
+        val xs: ArrayList<Int>,
+        val ys: ArrayList<Int>,
+        val ws: ArrayList<Float>,
+        val totalW: Float,
+        val meanX: Double,
+        val meanY: Double,
+        val angle: Double,
+        val score: Float
+    )
+
+    /**
+     * Flood-fill every connected component in [mask], score by elongation
+     * + residual of a quick weighted fit, return the single best elongated
+     * line. Rejects compact/circular remnants left by partial balls.
+     */
+    private fun selectBestLineComponent(
+        mask: BooleanArray,
+        brightness: IntArray,
+        size: Int
+    ): CompResult? {
+        val n = size * size
+        val visited = scratchVisited
+        java.util.Arrays.fill(visited, 0, n, false)
+        val qx = qxBuf
+        val qy = qyBuf
+
+        var best: CompResult? = null
+        var bestScore = -1f
+
+        for (y0 in 0 until size) {
+            for (x0 in 0 until size) {
+                val start = y0 * size + x0
+                if (!mask[start] || visited[start]) continue
+
+                var head = 0
+                var tail = 0
+                qx[tail] = x0; qy[tail] = y0; tail++
+                visited[start] = true
+
+                var minX = x0; var maxX = x0
+                var minY = y0; var maxY = y0
+                var area = 0
+
+                while (head < tail) {
+                    val cx = qx[head]
+                    val cy = qy[head]
+                    head++
+                    area++
+                    if (cx < minX) minX = cx
+                    if (cx > maxX) maxX = cx
+                    if (cy < minY) minY = cy
+                    if (cy > maxY) maxY = cy
+
+                    if (cx + 1 < size) {
+                        val ni = cy * size + (cx + 1)
+                        if (mask[ni] && !visited[ni]) {
+                            visited[ni] = true; qx[tail] = cx + 1; qy[tail] = cy; tail++
+                        }
+                    }
+                    if (cx - 1 >= 0) {
+                        val ni = cy * size + (cx - 1)
+                        if (mask[ni] && !visited[ni]) {
+                            visited[ni] = true; qx[tail] = cx - 1; qy[tail] = cy; tail++
+                        }
+                    }
+                    if (cy + 1 < size) {
+                        val ni = (cy + 1) * size + cx
+                        if (mask[ni] && !visited[ni]) {
+                            visited[ni] = true; qx[tail] = cx; qy[tail] = cy + 1; tail++
+                        }
+                    }
+                    if (cy - 1 >= 0) {
+                        val ni = (cy - 1) * size + cx
+                        if (mask[ni] && !visited[ni]) {
+                            visited[ni] = true; qx[tail] = cx; qy[tail] = cy - 1; tail++
+                        }
+                    }
+                }
+
+                if (area < Tunables.minLinePixels) continue
+
+                val bw = (maxX - minX + 1).toFloat()
+                val bh = (maxY - minY + 1).toFloat()
+                val aspect = maxOf(bw, bh) / minOf(bw, bh).coerceAtLeast(1f)
+                val fill = area / (bw * bh)
+
+                // Hard reject compact/circular blobs (partial balls)
+                if (aspect < 2.0f && fill > 0.35f) continue
+                if (aspect < 1.6f) continue
+
+                val xs = ArrayList<Int>(area)
+                val ys = ArrayList<Int>(area)
+                val ws = ArrayList<Float>(area)
+                var totalW = 0f
+                for (i in 0 until tail) {
+                    val px = qx[i]; val py = qy[i]
+                    val w = brightness[py * size + px].toFloat().coerceAtLeast(1f)
+                    xs.add(px); ys.add(py); ws.add(w)
+                    totalW += w
+                }
+                if (totalW < 1f) continue
+
+                var meanX = 0.0; var meanY = 0.0
+                for (i in xs.indices) {
+                    meanX += xs[i] * ws[i]
+                    meanY += ys[i] * ws[i]
+                }
+                meanX /= totalW
+                meanY /= totalW
+
+                val angle = weightedFitAngle(xs, ys, ws, meanX, meanY)
+                val dirX = cos(angle); val dirY = sin(angle)
+                var sqR = 0.0
+                for (i in xs.indices) {
+                    val perp = -(xs[i] - meanX) * dirY + (ys[i] - meanY) * dirX
+                    sqR += perp * perp
+                }
+                val rms = sqrt(sqR / xs.size).toFloat().coerceAtLeast(0.01f)
+
+                val score = (area.toFloat() / (1f + rms * 2f)) * (1f + (aspect - 1f) * 0.35f)
+
+                if (score > bestScore) {
+                    bestScore = score
+                    best = CompResult(xs, ys, ws, totalW, meanX, meanY, angle, score)
+                }
+            }
+        }
+        return best
+    }
+
+    // ------------------------------------------------------------------
+    // Color helpers
+    // ------------------------------------------------------------------
+
     private fun rgbToHsv(r: Int, g: Int, b: Int): FloatArray {
         val rf = r / 255f; val gf = g / 255f; val bf = b / 255f
         val maxC = maxOf(rf, gf, bf)
         val minC = minOf(rf, gf, bf)
         val delta = maxC - minC
 
-        // Standard RGB->HSV hue formula. The r-max branch's raw value is
-        // in [-60,60) degrees (deliberately not wrapped here); the
-        // if-negative-add-360 check right below is that wrap — equivalent
-        // to "mod 6" on the pre-multiplied fraction, just spelled out with
-        // plain arithmetic instead of a stdlib mod call.
         var hue = when {
             delta < 1e-6f -> 0f
             maxC == rf -> 60f * ((gf - bf) / delta)
@@ -230,23 +355,15 @@ object LineDetector {
 
         val sat = if (maxC < 1e-6f) 0f else (delta / maxC)
         val value = maxC
-
         return floatArrayOf(hue, sat * 255f, value * 255f)
     }
 
-    /** Shortest distance between two hue angles on the 360°-wraparound
-     * circle, e.g. 350° and 5° are 15° apart, not 345°. */
     private fun circularHueDist(a: Float, b: Float): Float {
         var d = abs(a - b) % 360f
         if (d > 180f) d = 360f - d
         return d
     }
 
-    /** True if (h,s,v) is close to the reference on ALL THREE axes at
-     * once — the "looks like this background color" test used for both
-     * the felt and the optional rail/cushion reference. Differing enough
-     * in hue, OR in saturation, OR in value alone is enough to escape
-     * this and be treated as a real candidate pixel. */
     private fun closeToReference(
         h: Float, s: Float, v: Float,
         refHueDeg: Float, hueToleranceDeg: Float,
@@ -260,14 +377,14 @@ object LineDetector {
     }
 
     // ------------------------------------------------------------------
-    // Circle / blob killer
+    // Circle / blob killer (in-place, tighter thresholds for partial balls)
     // ------------------------------------------------------------------
-    private fun killCircularBlobs(mask: BooleanArray, size: Int): BooleanArray {
+    private fun killCircularBlobsInPlace(mask: BooleanArray, size: Int) {
         val n = size * size
-        val visited = BooleanArray(n)
-        val out = mask.copyOf()
-        val qx = IntArray(n)
-        val qy = IntArray(n)
+        val visited = scratchVisited
+        java.util.Arrays.fill(visited, 0, n, false)
+        val qx = qxBuf
+        val qy = qyBuf
 
         for (y in 0 until size) {
             for (x in 0 until size) {
@@ -306,9 +423,7 @@ object LineDetector {
                 }
 
                 if (area < 6) {
-                    for (i in 0 until tail) {
-                        out[qy[i] * size + qx[i]] = false
-                    }
+                    for (i in 0 until tail) mask[qy[i] * size + qx[i]] = false
                     continue
                 }
 
@@ -317,20 +432,16 @@ object LineDetector {
                 val aspect = maxOf(bw, bh) / minOf(bw, bh).coerceAtLeast(1f)
                 val fill = area / (bw * bh)
 
-                val isCircleLike = aspect < 1.85f && fill > 0.42f
-
+                val isCircleLike = aspect < 2.1f && fill > 0.38f
                 if (isCircleLike) {
-                    for (i in 0 until tail) {
-                        out[qy[i] * size + qx[i]] = false
-                    }
+                    for (i in 0 until tail) mask[qy[i] * size + qx[i]] = false
                 }
             }
         }
-        return out
     }
 
     // ------------------------------------------------------------------
-    // Helpers
+    // PCA / outlier helpers
     // ------------------------------------------------------------------
     private fun weightedFitAngle(
         xs: List<Int>, ys: List<Int>, ws: List<Float>,
@@ -377,38 +488,79 @@ object LineDetector {
         return Triple(outXs, outYs, outWs)
     }
 
-    private fun erode(mask: BooleanArray, size: Int, radius: Int): BooleanArray {
-        if (radius <= 0) return mask.copyOf()
-        val out = BooleanArray(size * size)
-        for (row in 0 until size) for (col in 0 until size) {
-            var all = mask[row * size + col]
-            if (all) {
-                outer@ for (dy in -radius..radius) for (dx in -radius..radius) {
-                    val ny = row + dy; val nx = col + dx
-                    if (ny !in 0 until size || nx !in 0 until size || !mask[ny * size + nx]) {
-                        all = false
-                        break@outer
+    // ------------------------------------------------------------------
+    // Separable morphology — rectangular SE, O(n·r)
+    // Boundary: OOB treated as false (same as original 2-D loops).
+    // ------------------------------------------------------------------
+
+    private fun erodeSeparable(mask: BooleanArray, size: Int, radius: Int, out: BooleanArray): BooleanArray {
+        if (radius <= 0) {
+            System.arraycopy(mask, 0, out, 0, size * size)
+            return out
+        }
+        val tmp = scratchTmp
+        for (row in 0 until size) {
+            val rowOff = row * size
+            for (col in 0 until size) {
+                var all = true
+                val c0 = col - radius
+                val c1 = col + radius
+                if (c0 < 0 || c1 >= size) {
+                    all = false
+                } else {
+                    for (c in c0..c1) {
+                        if (!mask[rowOff + c]) { all = false; break }
                     }
                 }
+                tmp[rowOff + col] = all
             }
-            out[row * size + col] = all
+        }
+        for (col in 0 until size) {
+            for (row in 0 until size) {
+                var all = true
+                val r0 = row - radius
+                val r1 = row + radius
+                if (r0 < 0 || r1 >= size) {
+                    all = false
+                } else {
+                    for (r in r0..r1) {
+                        if (!tmp[r * size + col]) { all = false; break }
+                    }
+                }
+                out[row * size + col] = all
+            }
         }
         return out
     }
 
-    private fun dilate(mask: BooleanArray, size: Int, radius: Int): BooleanArray {
-        if (radius <= 0) return mask.copyOf()
-        val out = BooleanArray(size * size)
-        for (row in 0 until size) for (col in 0 until size) {
-            var any = false
-            outer@ for (dy in -radius..radius) for (dx in -radius..radius) {
-                val ny = row + dy; val nx = col + dx
-                if (ny in 0 until size && nx in 0 until size && mask[ny * size + nx]) {
-                    any = true
-                    break@outer
+    private fun dilateSeparable(mask: BooleanArray, size: Int, radius: Int, out: BooleanArray): BooleanArray {
+        if (radius <= 0) {
+            System.arraycopy(mask, 0, out, 0, size * size)
+            return out
+        }
+        val tmp = scratchTmp
+        for (row in 0 until size) {
+            val rowOff = row * size
+            for (col in 0 until size) {
+                var any = false
+                val c0 = (col - radius).coerceAtLeast(0)
+                val c1 = (col + radius).coerceAtMost(size - 1)
+                for (c in c0..c1) {
+                    if (mask[rowOff + c]) { any = true; break }
                 }
+                tmp[rowOff + col] = any
             }
-            out[row * size + col] = any
+        }
+        for (col in 0 until size) {
+            for (row in 0 until size) {
+                var any = false
+                val r0 = (row - radius).coerceAtLeast(0)
+                val r1 = (row + radius).coerceAtMost(size - 1)
+                for (r in r0..r1) {
+                    if (tmp[r * size + col]) { any = true; break }
+                }
+                out[row * size + col] = any
+            }
         }
         return out
     }
