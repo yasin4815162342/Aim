@@ -222,7 +222,9 @@ object OverlayController {
     private fun buildPanel(service: Service, wm: WindowManager) {
         val panel = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24, 24, 24, 24)
+            // Tighter padding so correction ↑/↓ buttons fit on narrow
+            // screens (A32) without the right edge being clipped.
+            setPadding(12, 16, 12, 16)
             setBackgroundColor(0xCC000000.toInt())
         }
 
@@ -238,19 +240,24 @@ object OverlayController {
         scroll.addView(settings)
         panel.addView(scroll)
 
-        // Bug #3: the panel was excessively large. Width used to be
-        // WRAP_CONTENT (whatever the content naturally measured out to) and
-        // height a flat 900px. Both dimensions are now cut to exactly half:
-        // measure the panel's true unconstrained width once, and use half
-        // of that plus half of the old fixed height (900 -> 450). The inner
-        // ScrollView still handles any overflow either way.
-        val unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-        panel.measure(unspecified, unspecified)
-        val naturalWidth = panel.measuredWidth.takeIf { it > 0 } ?: screenWidth
-        val halvedWidth = (naturalWidth / 2).coerceAtLeast(200)
+        // Floating panel width: cap to ~52% of screen so the full panel
+        // (including correction ↑/↓ buttons) stays visible on narrow
+        // devices like the Galaxy A32 (~720–1080px wide). Content is
+        // forced to MATCH_PARENT so seekbar rows shrink instead of
+        // clipping the right-side buttons.
+        val panelWidth = (screenWidth * 0.52f).toInt().coerceIn(280, 420)
+        scroll.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            0,
+            1f
+        )
+        settings.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
 
         val pParams = WindowManager.LayoutParams(
-            halvedWidth,
+            panelWidth,
             PANEL_HEIGHT_PX,
             OVERLAY_TYPE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
@@ -812,13 +819,31 @@ private class ManualHandle(
                     exactX += (rawX - lastRawX) * Tunables.manualSensitivity
                     exactY += (rawY - lastRawY) * Tunables.manualSensitivity
 
-                    val margin = MANUAL_HANDLE_HITBOX_PX * EDGE_LIMIT_FRACTION
-                    val minX = -margin
-                    val maxX = screenWidth - MANUAL_HANDLE_HITBOX_PX + margin
-                    val minY = -margin
-                    val maxY = screenHeight - MANUAL_HANDLE_HITBOX_PX + margin
-                    if (exactX < minX) exactX = minX else if (exactX > maxX) exactX = maxX
-                    if (exactY < minY) exactY = minY else if (exactY > maxY) exactY = maxY
+                    // When the table is calibrated, the handle centre is
+                    // limited to the table rect (table calibration is the
+                    // hard stop). Otherwise fall back to the usual
+                    // 10%-past-screen-edge clamp.
+                    val halfHit = MANUAL_HANDLE_HITBOX_PX / 2f
+                    if (Tunables.tableLeft >= 0f) {
+                        val minCX = Tunables.tableLeft
+                        val maxCX = Tunables.tableRight
+                        val minCY = Tunables.tableTop
+                        val maxCY = Tunables.tableBottom
+                        var cx = exactX + halfHit
+                        var cy = exactY + halfHit
+                        if (cx < minCX) cx = minCX else if (cx > maxCX) cx = maxCX
+                        if (cy < minCY) cy = minCY else if (cy > maxCY) cy = maxCY
+                        exactX = cx - halfHit
+                        exactY = cy - halfHit
+                    } else {
+                        val margin = MANUAL_HANDLE_HITBOX_PX * EDGE_LIMIT_FRACTION
+                        val minX = -margin
+                        val maxX = screenWidth - MANUAL_HANDLE_HITBOX_PX + margin
+                        val minY = -margin
+                        val maxY = screenHeight - MANUAL_HANDLE_HITBOX_PX + margin
+                        if (exactX < minX) exactX = minX else if (exactX > maxX) exactX = maxX
+                        if (exactY < minY) exactY = minY else if (exactY > maxY) exactY = maxY
+                    }
 
                     params.x = Math.round(exactX)
                     params.y = Math.round(exactY)
@@ -1287,7 +1312,18 @@ class DrawOverlayView(context: Context) : View(context) {
     // dashed/double/ghost-marker/sensitivity) is manual-only and never
     // touched by the automatic rendering above.
 
-    /** Renders the manual CUE->TARGET aim line and its bank segments. */
+    /**
+     * Renders the manual CUE->TARGET aim line and its bank segments.
+     *
+     * Behaviour:
+     * - CUE line (CUE → TARGET) is always drawn.
+     * - Bank trajectory (extension to the rail + reflected segments +
+     *   double-line / ghost-rail markers on those segments) is only drawn
+     *   when the TARGET is touching a table edge. While TARGET floats in
+     *   the middle of the table, those prediction lines stay hidden.
+     * - Table calibration is the hard limit for handle travel (enforced
+     *   in ManualHandle); here it also defines the reflection walls.
+     */
     private fun drawManualController(canvas: Canvas) {
         if (!Tunables.manualControllerEnabled) return
 
@@ -1321,6 +1357,17 @@ class DrawOverlayView(context: Context) : View(context) {
             left = 0f; top = 0f; right = width.toFloat(); bottom = height.toFloat()
         }
 
+        // TARGET is "on the rail" when its centre is within a small
+        // tolerance of any edge of the (inset) table rect. Only then do
+        // we draw bank trajectory / prediction lines.
+        val edgeTol = (halfBall * 0.35f).coerceAtLeast(6f)
+        val targetOnEdge = calibrated && (
+            abs(targetX - left) <= edgeTol ||
+            abs(targetX - right) <= edgeTol ||
+            abs(targetY - top) <= edgeTol ||
+            abs(targetY - bottom) <= edgeTol
+        )
+
         val alphaScale = Tunables.manualLineOpacity / 255f
         manualCenterPaint.color = Tunables.manualLineColor
         manualCenterPaint.strokeWidth = Tunables.manualLineWidthPx
@@ -1335,63 +1382,79 @@ class DrawOverlayView(context: Context) : View(context) {
         manualMarkerRing.alpha = (255 * alphaScale).toInt()
         manualMarkerDot.alpha = (255 * alphaScale).toInt()
 
+        // ---- Always: CUE → TARGET direct aim line (never hidden) ----
+        val nearT = (len - halfBall).coerceAtLeast(0f)
+        if (nearT > 1f) {
+            val endNearX = cueX + dx * nearT
+            val endNearY = cueY + dy * nearT
+            drawManualSegLine(canvas, cueX, cueY, endNearX, endNearY, manualBorderPaint)
+            drawManualSegLine(canvas, cueX, cueY, endNearX, endNearY, manualCenterPaint)
+
+            if (Tunables.manualDoubleLineEnabled) {
+                var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                val px = -dy * doubleHalfWidth
+                val py = dx * doubleHalfWidth
+                canvas.drawLine(cueX + px, cueY + py, endNearX + px, endNearY + py, manualDoublePaint)
+                canvas.drawLine(cueX - px, cueY - py, endNearX - px, endNearY - py, manualDoublePaint)
+            }
+        }
+
+        // ---- Only when TARGET is on a rail: bank trajectory prediction ----
+        if (!targetOnEdge) return
+
         val maxTotalLength = ((right - left) + (bottom - top)) * 1.4f
-        // Same near-rail robustness clamp as the automatic path — see the
-        // comment in drawDirection above.
         var curX = cueX.coerceIn(left, right)
         var curY = cueY.coerceIn(top, bottom)
         var remaining = maxTotalLength
         val maxLines = Tunables.maxLines
+        var segDx = dx
+        var segDy = dy
 
         for (segment in 0 until maxLines) {
             if (remaining <= 1f) break
 
             var tX = Float.MAX_VALUE
             var tY = Float.MAX_VALUE
-            if (dx > 1e-4f) tX = (right - curX) / dx else if (dx < -1e-4f) tX = (left - curX) / dx
-            if (dy > 1e-4f) tY = (bottom - curY) / dy else if (dy < -1e-4f) tY = (top - curY) / dy
+            if (segDx > 1e-4f) tX = (right - curX) / segDx else if (segDx < -1e-4f) tX = (left - curX) / segDx
+            if (segDy > 1e-4f) tY = (bottom - curY) / segDy else if (segDy < -1e-4f) tY = (top - curY) / segDy
 
             val tWall = minOf(tX, tY)
             if (tWall == Float.MAX_VALUE || tWall < 0.5f) break
 
             val tDraw = minOf(tWall, remaining)
-            val endX = curX + dx * tDraw
-            val endY = curY + dy * tDraw
+            val endX = curX + segDx * tDraw
+            val endY = curY + segDy * tDraw
 
-            val segBorder = if (segment == 0) manualBorderPaint else manualBankBorderPaint
-            val segCenter = if (segment == 0) manualCenterPaint else manualBankCenterPaint
-
-            if (segment == 0 && len > halfBall) {
-                // Gap around the target ball — the line represents a ball
-                // sitting at TARGET, so it never draws *through* it.
-                // Ported verbatim from the Manual app.
-                val nearT = minOf(len - halfBall, tDraw)
-                drawManualSegLine(canvas, curX, curY, curX + dx * nearT, curY + dy * nearT, segBorder)
-                drawManualSegLine(canvas, curX, curY, curX + dx * nearT, curY + dy * nearT, segCenter)
-
+            // First segment already drawn as CUE→TARGET above; only draw
+            // the part past the target ball, then all bank segments.
+            if (segment == 0) {
                 val farT = len + halfBall
                 if (tDraw > farT) {
-                    val farX = curX + dx * farT
-                    val farY = curY + dy * farT
-                    drawManualSegLine(canvas, farX, farY, endX, endY, segBorder)
-                    drawManualSegLine(canvas, farX, farY, endX, endY, segCenter)
+                    val farX = curX + segDx * farT
+                    val farY = curY + segDy * farT
+                    drawManualSegLine(canvas, farX, farY, endX, endY, manualBorderPaint)
+                    drawManualSegLine(canvas, farX, farY, endX, endY, manualCenterPaint)
+                    if (Tunables.manualDoubleLineEnabled) {
+                        var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                        if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                        val px = -segDy * doubleHalfWidth
+                        val py = segDx * doubleHalfWidth
+                        canvas.drawLine(farX + px, farY + py, endX + px, endY + py, manualDoublePaint)
+                        canvas.drawLine(farX - px, farY - py, endX - px, endY - py, manualDoublePaint)
+                    }
                 }
             } else {
-                drawManualSegLine(canvas, curX, curY, endX, endY, segBorder)
-                drawManualSegLine(canvas, curX, curY, endX, endY, segCenter)
-            }
-
-            if (Tunables.manualDoubleLineEnabled) {
-                val segDouble = if (segment == 0) manualDoublePaint else manualBankDoublePaint
-                // Offset from the ball radius, not an absolute width — 0
-                // keeps the double lines exactly ball-width apart, same as
-                // the Manual app's doubleLineWidthOffset.
-                var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
-                if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
-                val px = -dy * doubleHalfWidth
-                val py = dx * doubleHalfWidth
-                canvas.drawLine(curX + px, curY + py, endX + px, endY + py, segDouble)
-                canvas.drawLine(curX - px, curY - py, endX - px, endY - py, segDouble)
+                drawManualSegLine(canvas, curX, curY, endX, endY, manualBankBorderPaint)
+                drawManualSegLine(canvas, curX, curY, endX, endY, manualBankCenterPaint)
+                if (Tunables.manualDoubleLineEnabled) {
+                    var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                    if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                    val px = -segDy * doubleHalfWidth
+                    val py = segDx * doubleHalfWidth
+                    canvas.drawLine(curX + px, curY + py, endX + px, endY + py, manualBankDoublePaint)
+                    canvas.drawLine(curX - px, curY - py, endX - px, endY - py, manualBankDoublePaint)
+                }
             }
 
             remaining -= tDraw
@@ -1404,8 +1467,8 @@ class DrawOverlayView(context: Context) : View(context) {
                 canvas.drawCircle(endX, endY, 4f, manualMarkerDot)
             }
 
-            val reflected = BankShot.reflect(dx, dy, hitVertical) ?: break
-            dx = reflected[0]; dy = reflected[1]
+            val reflected = BankShot.reflect(segDx, segDy, hitVertical) ?: break
+            segDx = reflected[0]; segDy = reflected[1]
             curX = endX; curY = endY
         }
     }

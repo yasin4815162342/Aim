@@ -118,11 +118,14 @@ object SettingsPanelBuilder {
                 onChanged()
             }
 
-            val btnSize = (44 * density).toInt()
+            // Compact buttons so the ↑/↓ + seekbar row fits inside the
+            // narrow floating panel on phones like the Galaxy A32.
+            val btnSize = (36 * density).toInt()
             val decBtn = Button(context).apply {
                 text = "\u2193" // ↓ decrement
                 minimumWidth = 0
                 minimumHeight = 0
+                setPadding(0, 0, 0, 0)
                 layoutParams = LinearLayout.LayoutParams(btnSize, LinearLayout.LayoutParams.WRAP_CONTENT)
                 setOnClickListener { applyValue(current - stepSize, fromButton = true) }
             }
@@ -130,6 +133,7 @@ object SettingsPanelBuilder {
                 text = "\u2191" // ↑ increment
                 minimumWidth = 0
                 minimumHeight = 0
+                setPadding(0, 0, 0, 0)
                 layoutParams = LinearLayout.LayoutParams(btnSize, LinearLayout.LayoutParams.WRAP_CONTENT)
                 setOnClickListener { applyValue(current + stepSize, fromButton = true) }
             }
