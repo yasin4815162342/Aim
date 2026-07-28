@@ -885,10 +885,10 @@ private class ManualHandle(
 
 /**
  * Visual for a manual handle — a big translucent hitbox (red circle for
- * CUE, black square for TARGET) plus, for CUE only, a ball-diameter
- * circle outline with a red center dot. TARGET intentionally has no ball
- * outline — ported verbatim from the Manual app's DraggableHandle,
- * including that asymmetry.
+ * CUE, black square for TARGET) plus a ball-diameter ghost-ball outline
+ * with a red center dot for BOTH roles. The ghost ball on TARGET must
+ * always be visible; only the bank-shot trajectory line is gated on
+ * "TARGET is on a rail."
  */
 private class ManualHandleView(
     context: Context,
@@ -931,8 +931,9 @@ private class ManualHandleView(
             canvas.drawRect(cx - ch, cy - ch, cx + ch, cy + ch, controllerFill)
         }
 
-        if (role == ManualRole.CUE) {
-            val r = visualDiameterPx / 2f - outline.strokeWidth / 2f
+        // Ghost ball always drawn for both CUE and TARGET.
+        val r = visualDiameterPx / 2f - outline.strokeWidth / 2f
+        if (r > 1f) {
             canvas.drawCircle(cx, cy, r, outline)
             canvas.drawCircle(cx, cy, 4f, centerDot)
         }
@@ -1362,15 +1363,17 @@ class DrawOverlayView(context: Context) : View(context) {
             left = 0f; top = 0f; right = width.toFloat(); bottom = height.toFloat()
         }
 
-        // TARGET is "on the rail" when its centre is within a small
-        // tolerance of any edge of the (inset) table rect. Only then do
-        // we draw bank trajectory / prediction lines.
-        val edgeTol = (halfBall * 0.35f).coerceAtLeast(6f)
+        // TARGET is "on the rail" when its centre is within ~half-ball of
+        // any TRUE table edge (not the inset bounce rect). Using the inset
+        // left/right/top/bottom made edge detection almost impossible —
+        // dragging TARGET flush to the felt rail still sat ~halfBall away
+        // from the inset line, so bank trajectory never appeared.
+        val edgeTol = halfBall.coerceAtLeast(16f)
         val targetOnEdge = calibrated && (
-            abs(targetX - left) <= edgeTol ||
-            abs(targetX - right) <= edgeTol ||
-            abs(targetY - top) <= edgeTol ||
-            abs(targetY - bottom) <= edgeTol
+            targetX <= Tunables.tableLeft + edgeTol ||
+            targetX >= Tunables.tableRight - edgeTol ||
+            targetY <= Tunables.tableTop + edgeTol ||
+            targetY >= Tunables.tableBottom - edgeTol
         )
 
         val alphaScale = Tunables.manualLineOpacity / 255f
