@@ -133,19 +133,45 @@ object LineDetector {
             }
         }
 
-        // --- Stage 3: pick the single strongest elongated component (Scenario A) ---
+        // --- Stage 3: prefer strongest elongated component (Scenario A);
+        //     fall back to all surviving line pixels if none pass filters
+        //     (Scenario B / thin short guidelines must still lock). ---
         val best = selectBestLineComponent(lineMask, brightness, size)
-        if (best == null) {
-            return DetectionResult(hasLine = false, previewArgb = preview)
-        }
+        val xs: ArrayList<Int>
+        val ys: ArrayList<Int>
+        val ws: ArrayList<Float>
+        var totalW: Float
+        var meanX: Double
+        var meanY: Double
+        var angle: Double
 
-        val xs = best.xs
-        val ys = best.ys
-        val ws = best.ws
-        var totalW = best.totalW
-        var meanX = best.meanX
-        var meanY = best.meanY
-        var angle = best.angle
+        if (best != null) {
+            xs = best.xs; ys = best.ys; ws = best.ws
+            totalW = best.totalW; meanX = best.meanX; meanY = best.meanY; angle = best.angle
+        } else {
+            // Fallback: collect every surviving line pixel (original behaviour)
+            xs = ArrayList(n / 4); ys = ArrayList(n / 4); ws = ArrayList(n / 4)
+            totalW = 0f
+            for (row in 0 until size) for (col in 0 until size) {
+                val i = row * size + col
+                if (lineMask[i]) {
+                    val w = brightness[i].toFloat().coerceAtLeast(1f)
+                    xs.add(col); ys.add(row); ws.add(w)
+                    totalW += w
+                }
+            }
+            if (xs.size < Tunables.minLinePixels || totalW < 1f) {
+                return DetectionResult(hasLine = false, previewArgb = preview)
+            }
+            meanX = 0.0; meanY = 0.0
+            for (i in xs.indices) {
+                meanX += xs[i] * ws[i]
+                meanY += ys[i] * ws[i]
+            }
+            meanX /= totalW
+            meanY /= totalW
+            angle = weightedFitAngle(xs, ys, ws, meanX, meanY)
+        }
 
         // Two rounds of outlier trim + refit on the chosen component only
         repeat(2) {
@@ -291,9 +317,11 @@ object LineDetector {
                 val aspect = maxOf(bw, bh) / minOf(bw, bh).coerceAtLeast(1f)
                 val fill = area / (bw * bh)
 
-                // Hard reject compact/circular blobs (partial balls)
-                if (aspect < 2.0f && fill > 0.35f) continue
-                if (aspect < 1.6f) continue
+                // Reject only clearly circular/compact blobs (partial balls).
+                // Thin guidelines (even short ones in a small crop) often have
+                // aspect ~1.3–2.0 — do NOT hard-reject those; score ranking
+                // still prefers the more elongated component when several exist.
+                if (aspect < 1.8f && fill > 0.45f) continue
 
                 val xs = ArrayList<Int>(area)
                 val ys = ArrayList<Int>(area)
@@ -432,7 +460,7 @@ object LineDetector {
                 val aspect = maxOf(bw, bh) / minOf(bw, bh).coerceAtLeast(1f)
                 val fill = area / (bw * bh)
 
-                val isCircleLike = aspect < 2.1f && fill > 0.38f
+                val isCircleLike = aspect < 1.9f && fill > 0.45f
                 if (isCircleLike) {
                     for (i in 0 until tail) mask[qy[i] * size + qx[i]] = false
                 }
