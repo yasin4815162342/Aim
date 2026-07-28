@@ -56,6 +56,12 @@ object Tunables {
     // --- Ray Monitor: the raw-pixel debug preview + status text overlay ---
     @Volatile var rayMonitorEnabled: Boolean = AutoAimPrefs.DEFAULT_RAY_MONITOR_ENABLED
 
+    // --- Capture resolution vs accuracy trade-off. Read once per capture
+    //     session start (CaptureService) — changing this mid-session needs
+    //     a Stop + Start to take effect, since it resizes the VirtualDisplay
+    //     and ImageReader. See AutoAimPrefs for the full explanation. ---
+    @Volatile var captureScale: Float = AutoAimPrefs.DEFAULT_CAPTURE_SCALE
+
     // --- Auto-aim line look. Manual now — no longer derived from the
     //     detected target ball's color/width. ---
     @Volatile var autoAimWidthPx: Float = AutoAimPrefs.DEFAULT_AUTO_AIM_WIDTH_PX

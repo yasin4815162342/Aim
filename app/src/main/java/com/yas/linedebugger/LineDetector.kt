@@ -231,8 +231,15 @@ object LineDetector {
             widthPx = widthEstimate,
             colorArgb = avgColor,
             pixelCount = count,
-            offsetX = meanX.toFloat(),
-            offsetY = meanY.toFloat(),
+            // xs/ys are integer column/row indices, i.e. pixel *corners*.
+            // meanX/meanY is therefore biased half a pixel toward the
+            // top-left corner convention. This bias is invisible in the
+            // angle (PCA is translation-invariant) and cancels out along a
+            // 45° diagonal, but doesn't cancel for near-horizontal/vertical
+            // lines — which is exactly the "diagonal is perfect, axis-
+            // aligned is off" pattern. +0.5 recenters to pixel centers.
+            offsetX = (meanX + 0.5).toFloat(),
+            offsetY = (meanY + 0.5).toFloat(),
             previewArgb = preview,
             score = score
         )

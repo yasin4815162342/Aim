@@ -41,10 +41,11 @@ class CaptureService : Service() {
     private val minFrameIntervalMs = 33L
 
     // Full-screen overlay coordinates → capture-buffer scale.
-    // Capture runs at CAPTURE_SCALE of native resolution to slash GPU/memory
-    // bandwidth (biggest source of the "phone turns into 20 fps" problem).
-    // Crop centers from OverlayController are in full-screen pixels and are
-    // scaled down when reading the buffer.
+    // Capture runs at Tunables.captureScale of native resolution — user-
+    // tunable trade-off between GPU/memory bandwidth and detection
+    // precision (see Tunables.captureScale / AutoAimPrefs). Crop centers
+    // from OverlayController are in full-screen pixels and are scaled down
+    // when reading the buffer.
     private var captureScale = 1f
     private var captureWidth = 0
     private var captureHeight = 0
@@ -136,10 +137,14 @@ class CaptureService : Service() {
         screenHeight = realMetrics.heightPixels
         val density = realMetrics.densityDpi
 
-        // Downscale capture. Half-res ≈ 4× less pixels/bandwidth; line
-        // detection only needs the small Ray-Zone crop anyway, so sub-pixel
-        // accuracy is not required. Keeps the phone usable at ~30 fps.
-        captureScale = CAPTURE_SCALE
+        // Capture resolution vs accuracy — user-tunable now (see Tunables /
+        // AutoAimPrefs). Lower = less GPU/bandwidth per mirrored frame but
+        // coarser detection precision (each buffer pixel is 1/captureScale
+        // screen pixels wide); 1.0 = native res = no resolution-driven
+        // position error, at the highest render cost.
+        captureScale = Tunables.captureScale.coerceIn(
+            AutoAimPrefs.CAPTURE_SCALE_MIN, AutoAimPrefs.CAPTURE_SCALE_MAX
+        )
         captureWidth = (screenWidth * captureScale).toInt().coerceAtLeast(160)
         captureHeight = (screenHeight * captureScale).toInt().coerceAtLeast(160)
         // Density for the virtual display: keep proportional so the surface
@@ -172,7 +177,7 @@ class CaptureService : Service() {
                 // Circle diameter is in full-screen pixels; crop size in the
                 // downscaled buffer is diameter * captureScale.
                 val diamScreen = Tunables.circleDiameter.coerceIn(1, minOf(screenWidth, screenHeight).coerceAtLeast(1))
-                val diamCap = (diamScreen * captureScale).toInt().coerceIn(8, minOf(image.width, image.height).coerceAtLeast(8))
+                val diamCap = Math.round(diamScreen * captureScale).coerceIn(8, minOf(image.width, image.height).coerceAtLeast(8))
                 val pixels = extractCrop(image, cx, cy, diamCap)
                 if (pixels != null && pixels.size >= diamCap * diamCap) {
                     // Detect on the (smaller) capture-space crop. Angle is
@@ -222,9 +227,13 @@ class CaptureService : Service() {
         val imgH = image.height
 
         val halfCap = diamCap / 2
-        // Map full-screen center into capture-buffer coordinates.
-        val cxCap = (cxScreen * captureScale).toInt()
-        val cyCap = (cyScreen * captureScale).toInt()
+        // Map full-screen center into capture-buffer coordinates. Round to
+        // nearest buffer pixel, not truncate — truncation silently drops up
+        // to 1 buffer px (= 1/captureScale screen px) depending on where the
+        // circle happens to sit on screen, which is why the offset used to
+        // vary from spot to spot rather than being a fixed amount.
+        val cxCap = Math.round(cxScreen * captureScale)
+        val cyCap = Math.round(cyScreen * captureScale)
 
         val maxStartX = (imgW - diamCap).coerceAtLeast(0)
         val maxStartY = (imgH - diamCap).coerceAtLeast(0)
@@ -333,9 +342,6 @@ class CaptureService : Service() {
         private const val EXTRA_DATA = "data"
         private const val NOTIF_ID = 1
         private const val CHANNEL_ID = "line_debugger_capture"
-
-        /** Capture buffer scale vs native resolution. 0.5 ≈ 4× fewer pixels. */
-        private const val CAPTURE_SCALE = 0.5f
 
         const val ACTION_STOP = "com.yas.linedebugger.STOP"
         const val ACTION_TOGGLE_VISIBILITY = "com.yas.linedebugger.TOGGLE_VISIBILITY"

@@ -279,6 +279,11 @@ object SettingsPanelBuilder {
         intSlider("Circle alpha", AutoAimPrefs.CIRCLE_ALPHA_MIN, AutoAimPrefs.CIRCLE_ALPHA_MAX, Tunables.circleAlpha) {
             Tunables.circleAlpha = it; AutoAimPrefs.setCircleAlpha(it)
         }
+        floatSlider(
+            "Capture scale", AutoAimPrefs.CAPTURE_SCALE_MIN, AutoAimPrefs.CAPTURE_SCALE_MAX,
+            Tunables.captureScale, 60, { "%.2fx".format(it) }
+        ) { Tunables.captureScale = it; AutoAimPrefs.setCaptureScale(it) }
+        hint("1.00x = native resolution, zero resolution-driven position error, but the heaviest render cost. Lower it if fps/battery/heat suffer on your device. Takes effect on the next Stop → Start of capture, not live.")
 
         // ==================== Auto Aim line look ====================
         sectionLabel("Auto Aim Line")

@@ -54,6 +54,7 @@ object AutoAimPrefs {
     private const val KEY_CIRCLE_DIAMETER = "circle_diameter"
     private const val KEY_CIRCLE_ALPHA = "circle_alpha"
     private const val KEY_RAY_MONITOR_ENABLED = "ray_monitor_enabled"
+    private const val KEY_CAPTURE_SCALE = "capture_scale"
 
     private const val KEY_AUTO_AIM_WIDTH_PX = "auto_aim_width_px"
     private const val KEY_AUTO_AIM_OPACITY = "auto_aim_opacity"
@@ -155,6 +156,19 @@ object AutoAimPrefs {
     const val DEFAULT_CIRCLE_ALPHA = 140
 
     const val DEFAULT_RAY_MONITOR_ENABLED = true
+
+    // Capture resolution as a fraction of native. 1.0 = full native res =
+    // zero resolution-driven position error, at the highest OS-side mirror/
+    // render cost. Only the crop's own bytes are ever processed (see
+    // CaptureService.extractCrop), so this cost is the screen compositor's,
+    // not the detector's — but on a modest chip (e.g. Galaxy A32) it can
+    // still show up as lower fps / more heat. Default is native res since
+    // accuracy was explicitly asked for; dial down from the tweak panel if
+    // it's too heavy on your specific device. Takes effect on the next
+    // capture start (Stop then Start), not live mid-session.
+    const val CAPTURE_SCALE_MIN = 0.4f
+    const val CAPTURE_SCALE_MAX = 1.0f
+    const val DEFAULT_CAPTURE_SCALE = 1.0f
 
     const val AUTO_AIM_WIDTH_MIN_PX = 1.0f
     const val AUTO_AIM_WIDTH_MAX_PX = 10.0f
@@ -293,6 +307,9 @@ object AutoAimPrefs {
 
     fun isRayMonitorEnabled() = prefs.getBoolean(KEY_RAY_MONITOR_ENABLED, DEFAULT_RAY_MONITOR_ENABLED)
     fun setRayMonitorEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_RAY_MONITOR_ENABLED, v).apply() }
+
+    fun getCaptureScale() = prefs.getFloat(KEY_CAPTURE_SCALE, DEFAULT_CAPTURE_SCALE)
+    fun setCaptureScale(v: Float) { prefs.edit().putFloat(KEY_CAPTURE_SCALE, v).apply() }
 
     fun getAutoAimWidthPx() = prefs.getFloat(KEY_AUTO_AIM_WIDTH_PX, DEFAULT_AUTO_AIM_WIDTH_PX)
     fun setAutoAimWidthPx(v: Float) { prefs.edit().putFloat(KEY_AUTO_AIM_WIDTH_PX, v).apply() }
@@ -441,6 +458,7 @@ object AutoAimPrefs {
         Tunables.circleDiameter = getCircleDiameter()
         Tunables.circleAlpha = getCircleAlpha()
         Tunables.rayMonitorEnabled = isRayMonitorEnabled()
+        Tunables.captureScale = getCaptureScale()
 
         Tunables.detectionMode = getDetectionMode()
         Tunables.feltHueDeg = getFeltHueDeg()
