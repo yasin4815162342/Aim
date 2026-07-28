@@ -52,6 +52,18 @@ object LineDetector {
     }
 
     fun detect(pixels: IntArray, size: Int): DetectionResult {
+        if (size <= 0 || pixels.size < size * size) {
+            return DetectionResult(hasLine = false)
+        }
+        return try {
+            detectInner(pixels, size)
+        } catch (t: Throwable) {
+            android.util.Log.e("LineDetector", "detect failed size=$size", t)
+            DetectionResult(hasLine = false)
+        }
+    }
+
+    private fun detectInner(pixels: IntArray, size: Int): DetectionResult {
         val n = size * size
         ensureScratch(n)
         val isCandidate = candidateBuf

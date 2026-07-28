@@ -144,12 +144,18 @@ class CaptureService : Service() {
             try {
                 val cx = OverlayController.circleCenterX
                 val cy = OverlayController.circleCenterY
-                val diam = Tunables.circleDiameter
+                // Clamp diam so crop never exceeds the captured image (prevents BufferUnderflow).
+                val diam = Tunables.circleDiameter.coerceIn(1, minOf(image.width, image.height).coerceAtLeast(1))
                 val pixels = extractCrop(image, cx, cy, diam)
-                val result = LineDetector.detect(pixels, diam)
-                mainHandler.post { OverlayController.updateResult(result) }
+                if (pixels.size == diam * diam) {
+                    val result = LineDetector.detect(pixels, diam)
+                    mainHandler.post { OverlayController.updateResult(result) }
+                }
+            } catch (t: Throwable) {
+                // Never let a detection bug kill the whole process / service.
+                android.util.Log.e("LineDebugger", "frame process failed", t)
             } finally {
-                image.close()
+                try { image.close() } catch (_: Throwable) {}
                 processing = false
             }
         }, bgHandler)
@@ -162,27 +168,34 @@ class CaptureService : Service() {
         val plane = image.planes[0]
         val buffer = plane.buffer
         val rowStride = plane.rowStride
-        val pixelStride = plane.pixelStride
+        val pixelStride = plane.pixelStride.coerceAtLeast(1)
         val imgW = image.width
         val imgH = image.height
-        val half = diam / 2
+        val safeDiam = diam.coerceIn(1, minOf(imgW, imgH).coerceAtLeast(1))
+        val half = safeDiam / 2
 
-        val maxStartX = (imgW - diam).coerceAtLeast(0)
-        val maxStartY = (imgH - diam).coerceAtLeast(0)
+        val maxStartX = (imgW - safeDiam).coerceAtLeast(0)
+        val maxStartY = (imgH - safeDiam).coerceAtLeast(0)
         val startX = (cx - half).coerceIn(0, maxStartX)
         val startY = (cy - half).coerceIn(0, maxStartY)
 
-        val out = IntArray(diam * diam)
+        val out = IntArray(safeDiam * safeDiam)
         val rowBytes = ByteArray(rowStride)
-        for (row in 0 until diam) {
-            buffer.position((startY + row) * rowStride)
+        val maxColBytes = (startX + safeDiam) * pixelStride
+        for (row in 0 until safeDiam) {
+            val y = startY + row
+            if (y >= imgH) break
+            val pos = y * rowStride
+            if (pos + rowStride > buffer.capacity()) break
+            buffer.position(pos)
             buffer.get(rowBytes, 0, rowStride)
-            for (col in 0 until diam) {
+            for (col in 0 until safeDiam) {
                 val offset = (startX + col) * pixelStride
+                if (offset + 2 >= rowStride) break
                 val r = rowBytes[offset].toInt() and 0xFF
                 val g = rowBytes[offset + 1].toInt() and 0xFF
                 val b = rowBytes[offset + 2].toInt() and 0xFF
-                out[row * diam + col] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                out[row * safeDiam + col] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
             }
         }
         buffer.rewind()

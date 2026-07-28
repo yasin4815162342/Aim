@@ -493,6 +493,16 @@ object OverlayController {
      * - Temporary loss of line -> keep previous lock for a few frames only
      */
     fun updateResult(result: DetectionResult) {
+        try {
+            updateResultInner(result)
+        } catch (t: Throwable) {
+            android.util.Log.e("OverlayController", "updateResult failed", t)
+            lastResult = result
+            drawView?.postInvalidate()
+        }
+    }
+
+    private fun updateResultInner(result: DetectionResult) {
         val prev = lockedResult
 
         if (!result.hasLine) {
