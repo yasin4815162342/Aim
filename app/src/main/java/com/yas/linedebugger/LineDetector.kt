@@ -1,6 +1,10 @@
 // ============================================================
 // FILE: app/src/main/java/com/yas/linedebugger/LineDetector.kt
 // FULL REPLACEMENT – type-fixed + aggressive circle kill + stable elongated-line only
+// Bug #2: candidate-pixel classification is now pluggable (three modes —
+// see classifyCandidates below) instead of a single hard-coded green/RGB
+// heuristic. Everything downstream (ball-shape erosion, circularity
+// blob-killer, weighted PCA fit, outlier trim, scoring) is unchanged.
 // ============================================================
 package com.yas.linedebugger
 
@@ -27,17 +31,72 @@ object LineDetector {
 
     fun detect(pixels: IntArray, size: Int): DetectionResult {
         val n = size * size
+        val isCandidate = BooleanArray(n)
+        val rejectedAsRail = BooleanArray(n)  // preview-only: which background class caught it
         val brightness = IntArray(n)
-        val notGreen: BooleanArray = when (Tunables.colorDetectionMode) {
-            AutoAimPrefs.COLOR_MODE_LEGACY_GREEN_DIFF -> classifyLegacyGreenDiff(pixels, n, brightness)
-            AutoAimPrefs.COLOR_MODE_MANUAL_HUE -> classifyByFeltHue(pixels, n, brightness, sampled = false)
-            else -> classifyByFeltHue(pixels, n, brightness, sampled = true)
+
+        val mode = Tunables.detectionMode
+
+        for (i in 0 until n) {
+            val p = pixels[i]
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            val bright = maxOf(r, g, b)
+            brightness[i] = bright
+
+            // --- Legacy classifier: green-hue-vs-brightness heuristic,
+            // byte-for-byte the original algorithm. Only source of truth
+            // in LEGACY mode; also checked (OR'd in) by HYBRID mode. ---
+            var legacyCandidate = false
+            if (mode == AutoAimPrefs.DETECTION_MODE_LEGACY || mode == AutoAimPrefs.DETECTION_MODE_HYBRID) {
+                val isGreenHue = (g - r) > Tunables.greenDiff && (g - b) > Tunables.greenDiff
+                val isFelt = isGreenHue && bright < Tunables.greenLineBrightness
+                legacyCandidate = !isFelt && bright > Tunables.minBrightness
+            }
+
+            // --- HSV felt-distance classifier: a pixel is background
+            // (felt, or optionally rail/cushion) only if it's close to
+            // that reference in hue AND saturation AND value; differing
+            // enough in any ONE of the three dimensions is enough to
+            // count it as a candidate. That's what recovers a green
+            // guideline (same hue as felt, different value/sat), a brown
+            // one (different hue entirely), and yellow (ditto) without
+            // needing a per-color special case. ---
+            var hsvCandidate = false
+            var railRejected = false
+            if (mode == AutoAimPrefs.DETECTION_MODE_HSV || mode == AutoAimPrefs.DETECTION_MODE_HYBRID) {
+                val hsv = rgbToHsv(r, g, b)
+                val h = hsv[0]; val s = hsv[1]; val v = hsv[2]
+
+                val looksLikeFelt = closeToReference(
+                    h, s, v,
+                    Tunables.feltHueDeg, Tunables.feltHueToleranceDeg,
+                    Tunables.feltSat.toFloat(), Tunables.feltSatTolerance.toFloat(),
+                    Tunables.feltVal.toFloat(), Tunables.feltValTolerance.toFloat()
+                )
+                val looksLikeRail = Tunables.railExclusionEnabled && closeToReference(
+                    h, s, v,
+                    Tunables.railHueDeg, Tunables.railHueToleranceDeg,
+                    Tunables.railSat.toFloat(), Tunables.railSatTolerance.toFloat(),
+                    Tunables.railVal.toFloat(), Tunables.railValTolerance.toFloat()
+                )
+                railRejected = !looksLikeFelt && looksLikeRail
+                hsvCandidate = !looksLikeFelt && !looksLikeRail && bright > Tunables.minBrightness
+            }
+
+            isCandidate[i] = when (mode) {
+                AutoAimPrefs.DETECTION_MODE_LEGACY -> legacyCandidate
+                AutoAimPrefs.DETECTION_MODE_HYBRID -> legacyCandidate || hsvCandidate
+                else -> hsvCandidate // DETECTION_MODE_HSV
+            }
+            rejectedAsRail[i] = !isCandidate[i] && railRejected
         }
 
         // --- Stage 1: classic morphological ball removal ---
-        val ballCore = erode(notGreen, size, Tunables.ballErodeRadius)
+        val ballCore = erode(isCandidate, size, Tunables.ballErodeRadius)
         val ballGrown = dilate(ballCore, size, Tunables.ballErodeRadius + Tunables.ballDilateGrow)
-        var lineMask = BooleanArray(n) { notGreen[it] && !ballGrown[it] }
+        var lineMask = BooleanArray(n) { isCandidate[it] && !ballGrown[it] }
 
         // --- Stage 2: kill remaining circle-like blobs ---
         lineMask = killCircularBlobs(lineMask, size)
@@ -48,8 +107,9 @@ object LineDetector {
             preview[i] = when {
                 lineMask[i] -> 0xFFFF00FF.toInt()          // magenta = accepted line
                 ballGrown[i] -> 0xFF3060FF.toInt()         // blue   = morphological ball
-                notGreen[i] -> 0xFFFFFF00.toInt()          // yellow = rejected non-green
-                else -> 0xFF104010.toInt()                 // dim green = felt
+                isCandidate[i] -> 0xFFFFFF00.toInt()       // yellow = candidate killed by shape, not color
+                rejectedAsRail[i] -> 0xFF6B4423.toInt()    // dim brown = rejected as rail/cushion (HSV/Hybrid only)
+                else -> 0xFF104010.toInt()                  // dim green = rejected as felt
             }
         }
 
@@ -142,175 +202,61 @@ object LineDetector {
     }
 
     // ------------------------------------------------------------------
-    // Color classification — decides which pixels are "felt" (thrown away)
-    // vs. "candidate line" (kept for the erode/dilate + circularity blob
-    // killer below, which is unchanged and already works well once it gets
-    // a clean candidate mask).
+    // Color classification helpers (bug #2)
     // ------------------------------------------------------------------
 
-    /** Mode 0: the original algorithm, byte-for-byte. Only a green-hued
-     * pixel can ever be classified as felt; everything else always passes
-     * through. Kept as a fallback / comparison mode. */
-    private fun classifyLegacyGreenDiff(pixels: IntArray, n: Int, brightness: IntArray): BooleanArray {
-        val notGreen = BooleanArray(n)
-        for (i in 0 until n) {
-            val p = pixels[i]
-            val r = (p shr 16) and 0xFF
-            val g = (p shr 8) and 0xFF
-            val b = p and 0xFF
-            val bright = maxOf(r, g, b)
-            brightness[i] = bright
-            val isGreenHue = (g - r) > Tunables.greenDiff && (g - b) > Tunables.greenDiff
-            val isFelt = isGreenHue && bright < Tunables.greenLineBrightness
-            notGreen[i] = !isFelt && bright > Tunables.minBrightness
+    /** RGB (0-255 each) -> HSV. Hue in degrees [0,360). Saturation and
+     * value are both scaled to [0,255], not the more common [0,1], so
+     * they sit on the same scale as the app's existing brightness-style
+     * sliders and can share UI/int plumbing with them. */
+    private fun rgbToHsv(r: Int, g: Int, b: Int): FloatArray {
+        val rf = r / 255f; val gf = g / 255f; val bf = b / 255f
+        val maxC = maxOf(rf, gf, bf)
+        val minC = minOf(rf, gf, bf)
+        val delta = maxC - minC
+
+        // Standard RGB->HSV hue formula. The r-max branch's raw value is
+        // in [-60,60) degrees (deliberately not wrapped here); the
+        // if-negative-add-360 check right below is that wrap — equivalent
+        // to "mod 6" on the pre-multiplied fraction, just spelled out with
+        // plain arithmetic instead of a stdlib mod call.
+        var hue = when {
+            delta < 1e-6f -> 0f
+            maxC == rf -> 60f * ((gf - bf) / delta)
+            maxC == gf -> 60f * (((bf - rf) / delta) + 2f)
+            else -> 60f * (((rf - gf) / delta) + 4f)
         }
-        return notGreen
+        if (hue < 0f) hue += 360f
+
+        val sat = if (maxC < 1e-6f) 0f else (delta / maxC)
+        val value = maxC
+
+        return floatArrayOf(hue, sat * 255f, value * 255f)
     }
 
-    /**
-     * Modes 1 & 2 (the color-failure fix): instead of hardcoding "felt =
-     * green", this samples (or takes as a manual slider) the felt's actual
-     * hue, then classifies a pixel as felt only if it's BOTH close to that
-     * hue AND close to the felt's sampled brightness — i.e. it's a
-     * lighting variation of the felt itself, not something drawn on top of
-     * it. Anything hue-distinct from the felt (brown/red/blue/orange
-     * guidelines) passes immediately; anything same-hue but sufficiently
-     * brighter or darker (a green-ball guideline on green felt) passes via
-     * the brightness differential. This treats every guideline color the
-     * same way red already worked, instead of only carving out one
-     * hardcoded exception.
-     *
-     * [sampled] = true: auto-sample the felt hue from this frame (mode 1,
-     * the new default). false: use Tunables.manualFeltHueDeg instead (mode
-     * 2), for when auto-sampling misfires.
-     */
-    private fun classifyByFeltHue(
-        pixels: IntArray, n: Int, brightness: IntArray, sampled: Boolean
-    ): BooleanArray {
-        val hue = FloatArray(n)
-        val sat = FloatArray(n)
-
-        for (i in 0 until n) {
-            val p = pixels[i]
-            val r = (p shr 16) and 0xFF
-            val g = (p shr 8) and 0xFF
-            val b = p and 0xFF
-            val maxc = maxOf(r, g, b)
-            val minc = minOf(r, g, b)
-            val delta = maxc - minc
-            brightness[i] = maxc
-            sat[i] = if (maxc == 0) 0f else delta.toFloat() / maxc
-            hue[i] = if (delta == 0) 0f else rgbHueDeg(r, g, b, maxc, delta)
-        }
-
-        val satMinFrac = Tunables.feltSaturationMin / 100f
-
-        // Reference felt hue: either auto-sampled (mode 1) or the manual
-        // slider (mode 2).
-        val feltHue = if (sampled) sampleDominantHue(hue, sat, n, satMinFrac) else Tunables.manualFeltHueDeg
-
-        // Felt brightness: median brightness among pixels within a fixed,
-        // generous window of the felt hue (independent of the user's
-        // classification tolerance below, so the reference stays stable
-        // even if they tighten that slider).
-        val feltBrightness = sampleFeltBrightness(hue, brightness, n, feltHue, windowDeg = 25f)
-
-        val hueTol = Tunables.feltHueToleranceDeg
-        val brightDiff = Tunables.feltBrightnessDiff
-
-        val notGreen = BooleanArray(n)
-        for (i in 0 until n) {
-            val bright = brightness[i]
-            if (bright <= Tunables.minBrightness) {
-                notGreen[i] = false
-                continue
-            }
-            val closeInHue = hueCircularDist(hue[i], feltHue) <= hueTol
-            val closeInBrightness = abs(bright - feltBrightness) <= brightDiff
-            val isFelt = closeInHue && closeInBrightness
-            notGreen[i] = !isFelt
-        }
-        return notGreen
-    }
-
-    private fun rgbHueDeg(r: Int, g: Int, b: Int, maxc: Int, delta: Int): Float {
-        val h = when (maxc) {
-            r -> 60f * (((g - b).toFloat() / delta) % 6f)
-            g -> 60f * (((b - r).toFloat() / delta) + 2f)
-            else -> 60f * (((r - g).toFloat() / delta) + 4f)
-        }
-        return if (h < 0f) h + 360f else h
-    }
-
-    private fun hueCircularDist(a: Float, b: Float): Float {
+    /** Shortest distance between two hue angles on the 360°-wraparound
+     * circle, e.g. 350° and 5° are 15° apart, not 345°. */
+    private fun circularHueDist(a: Float, b: Float): Float {
         var d = abs(a - b) % 360f
         if (d > 180f) d = 360f - d
         return d
     }
 
-    /** Weighted-circular-mean hue of the dominant (most common) hue bucket
-     * across the frame — the felt should always be the majority color in
-     * the capture circle. Low-saturation (near-gray) pixels are excluded
-     * from sampling since their hue is noisy, but can still be classified
-     * afterward via brightness alone. Falls back to green (120°) if too
-     * few saturated pixels exist to sample reliably (e.g. the guideline or
-     * a ball dominates the frame). */
-    private fun sampleDominantHue(hue: FloatArray, sat: FloatArray, n: Int, satMinFrac: Float): Float {
-        val buckets = 36 // 10° each
-        val counts = IntArray(buckets)
-        var qualifying = 0
-        for (i in 0 until n) {
-            if (sat[i] < satMinFrac) continue
-            val bucket = (hue[i] / 10f).toInt().coerceIn(0, buckets - 1)
-            counts[bucket]++
-            qualifying++
-        }
-        if (qualifying < n / 20) {
-            return 120f // fallback: assume green felt, same as the legacy default
-        }
-        var peakBucket = 0
-        var peakCount = -1
-        for (bkt in 0 until buckets) {
-            if (counts[bkt] > peakCount) {
-                peakCount = counts[bkt]
-                peakBucket = bkt
-            }
-        }
-        val bucketCenter = peakBucket * 10f + 5f
-
-        // Refine with a weighted circular mean of every qualifying pixel
-        // within 15° of the winning bucket's center.
-        var sumX = 0.0
-        var sumY = 0.0
-        var weight = 0.0
-        for (i in 0 until n) {
-            if (sat[i] < satMinFrac) continue
-            if (hueCircularDist(hue[i], bucketCenter) > 15f) continue
-            val rad = Math.toRadians(hue[i].toDouble())
-            val w = sat[i].toDouble()
-            sumX += Math.cos(rad) * w
-            sumY += Math.sin(rad) * w
-            weight += w
-        }
-        if (weight < 1e-6) return bucketCenter
-        var meanDeg = Math.toDegrees(Math.atan2(sumY, sumX)).toFloat()
-        if (meanDeg < 0f) meanDeg += 360f
-        return meanDeg
-    }
-
-    /** Median brightness among pixels whose hue lies within [windowDeg] of
-     * [feltHue] — the reference brightness for "this is felt, not a
-     * guideline drawn on the felt." */
-    private fun sampleFeltBrightness(hue: FloatArray, brightness: IntArray, n: Int, feltHue: Float, windowDeg: Float): Int {
-        val vals = ArrayList<Int>(n / 4)
-        for (i in 0 until n) {
-            if (hueCircularDist(hue[i], feltHue) <= windowDeg) {
-                vals.add(brightness[i])
-            }
-        }
-        if (vals.isEmpty()) return 100 // sane mid-range fallback
-        vals.sort()
-        return vals[vals.size / 2]
+    /** True if (h,s,v) is close to the reference on ALL THREE axes at
+     * once — the "looks like this background color" test used for both
+     * the felt and the optional rail/cushion reference. Differing enough
+     * in hue, OR in saturation, OR in value alone is enough to escape
+     * this and be treated as a real candidate pixel. */
+    private fun closeToReference(
+        h: Float, s: Float, v: Float,
+        refHueDeg: Float, hueToleranceDeg: Float,
+        refSat: Float, satTolerance: Float,
+        refVal: Float, valTolerance: Float
+    ): Boolean {
+        val closeHue = circularHueDist(h, refHueDeg) <= hueToleranceDeg
+        val closeSat = abs(s - refSat) <= satTolerance
+        val closeVal = abs(v - refVal) <= valTolerance
+        return closeHue && closeSat && closeVal
     }
 
     // ------------------------------------------------------------------

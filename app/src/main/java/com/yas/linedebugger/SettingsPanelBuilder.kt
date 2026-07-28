@@ -21,6 +21,13 @@ import android.widget.TextView
  */
 object SettingsPanelBuilder {
 
+    private fun detectionModeLabel(mode: Int): String = when (mode) {
+        AutoAimPrefs.DETECTION_MODE_HSV -> "HSV (new, primary)"
+        AutoAimPrefs.DETECTION_MODE_LEGACY -> "Legacy RGB (fallback)"
+        AutoAimPrefs.DETECTION_MODE_HYBRID -> "Hybrid (either method)"
+        else -> "unknown"
+    }
+
     fun build(context: Context, onChanged: () -> Unit, onCalibrate: (() -> Unit)?): LinearLayout {
         val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         val density = context.resources.displayMetrics.density
@@ -83,6 +90,68 @@ object SettingsPanelBuilder {
             root.addView(sb)
         }
 
+        // Bug #4: the correction sliders (Bank Correction Curve) span a wide
+        // range with a fine 0.1 step, which makes landing on a precise
+        // value by dragging impractical. This adds a [-] ... slider ... [+]
+        // row so each tap nudges by exactly one step (0.1) instead.
+        fun correctionSlider(
+            label: String, min: Float, max: Float, initial: Float, steps: Int, stepSize: Float,
+            format: (Float) -> String, onSet: (Float) -> Unit
+        ) {
+            var current = initial
+            val tv = TextView(context).apply { text = "$label: ${format(current)}"; setTextColor(Color.WHITE) }
+            root.addView(tv)
+
+            val sb = SeekBar(context).apply {
+                this.max = steps
+                progress = Math.round((current - min) / (max - min) * steps).coerceIn(0, steps)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+
+            fun applyValue(v: Float, fromButton: Boolean) {
+                current = v.coerceIn(min, max)
+                tv.text = "$label: ${format(current)}"
+                if (fromButton) {
+                    sb.progress = Math.round((current - min) / (max - min) * steps).coerceIn(0, steps)
+                }
+                onSet(current)
+                onChanged()
+            }
+
+            val btnSize = (44 * density).toInt()
+            val decBtn = Button(context).apply {
+                text = "\u2193" // ↓ decrement
+                minimumWidth = 0
+                minimumHeight = 0
+                layoutParams = LinearLayout.LayoutParams(btnSize, LinearLayout.LayoutParams.WRAP_CONTENT)
+                setOnClickListener { applyValue(current - stepSize, fromButton = true) }
+            }
+            val incBtn = Button(context).apply {
+                text = "\u2191" // ↑ increment
+                minimumWidth = 0
+                minimumHeight = 0
+                layoutParams = LinearLayout.LayoutParams(btnSize, LinearLayout.LayoutParams.WRAP_CONTENT)
+                setOnClickListener { applyValue(current + stepSize, fromButton = true) }
+            }
+
+            sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seek: SeekBar?, p: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        val v = min + (max - min) * (p / steps.toFloat())
+                        applyValue(v, fromButton = false)
+                    }
+                }
+                override fun onStartTrackingTouch(seek: SeekBar?) {}
+                override fun onStopTrackingTouch(seek: SeekBar?) {}
+            })
+
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(decBtn)
+            row.addView(sb)
+            row.addView(incBtn)
+            root.addView(row)
+        }
+
         fun checkbox(label: String, initial: Boolean, onSet: (Boolean) -> Unit) {
             val cb = CheckBox(context).apply {
                 text = label
@@ -97,6 +166,13 @@ object SettingsPanelBuilder {
         sectionLabel("Detection")
         intSlider("Green diff", AutoAimPrefs.GREEN_DIFF_MIN, AutoAimPrefs.GREEN_DIFF_MAX, Tunables.greenDiff) {
             Tunables.greenDiff = it; AutoAimPrefs.setGreenDiff(it)
+        }
+        hint("Green pixels at or above this brightness count as guideline, not felt — raise this if a green-ball line isn't showing.")
+        intSlider(
+            "Green line brightness", AutoAimPrefs.GREEN_LINE_BRIGHTNESS_MIN, AutoAimPrefs.GREEN_LINE_BRIGHTNESS_MAX,
+            Tunables.greenLineBrightness
+        ) {
+            Tunables.greenLineBrightness = it; AutoAimPrefs.setGreenLineBrightness(it)
         }
         intSlider("Min brightness", AutoAimPrefs.MIN_BRIGHTNESS_MIN, AutoAimPrefs.MIN_BRIGHTNESS_MAX, Tunables.minBrightness) {
             Tunables.minBrightness = it; AutoAimPrefs.setMinBrightness(it)
@@ -114,6 +190,80 @@ object SettingsPanelBuilder {
             "Outlier trim K", AutoAimPrefs.OUTLIER_TRIM_K_MIN, AutoAimPrefs.OUTLIER_TRIM_K_MAX,
             Tunables.outlierTrimK, 55, { "%.1f".format(it) }
         ) { Tunables.outlierTrimK = it; AutoAimPrefs.setOutlierTrimK(it) }
+
+        // ==================== Detection: color strategy (bug #2) ====================
+        // Green/brown/yellow guideline recovery. Three selectable
+        // candidate-pixel classifiers feeding the same erosion/dilation +
+        // line-fit pipeline above — see LineDetector.
+        sectionLabel("Detection: Color Mode")
+        val modeLabel = TextView(context).apply {
+            text = "Mode: ${detectionModeLabel(Tunables.detectionMode)}"
+            setTextColor(Color.WHITE)
+        }
+        root.addView(modeLabel)
+        hint("HSV is the new default — hue/saturation/value distance from the felt (and optional rail) reference below. Legacy is the original red/green-diff filter, kept as a no-regression fallback. Hybrid accepts a pixel either method would.")
+        val modeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        fun modeButton(label: String, mode: Int) {
+            modeRow.addView(Button(context).apply {
+                text = label
+                textSize = 11f
+                setOnClickListener {
+                    Tunables.detectionMode = mode
+                    AutoAimPrefs.setDetectionMode(mode)
+                    modeLabel.text = "Mode: ${detectionModeLabel(mode)}"
+                    onChanged()
+                }
+            })
+        }
+        modeButton("HSV", AutoAimPrefs.DETECTION_MODE_HSV)
+        modeButton("Legacy", AutoAimPrefs.DETECTION_MODE_LEGACY)
+        modeButton("Hybrid", AutoAimPrefs.DETECTION_MODE_HYBRID)
+        root.addView(modeRow)
+
+        sectionLabel("Felt Color Reference (HSV mode)")
+        hint("A pixel close to this hue AND saturation AND value is felt and gets discarded. Differing enough in hue, OR in saturation, OR in brightness alone is enough to survive as a candidate — that's what lets a green guideline through even though its hue matches the felt's.")
+        floatSlider(
+            "Felt hue", 0f, 360f, Tunables.feltHueDeg, 360, { "%.0f°".format(it) }
+        ) { Tunables.feltHueDeg = it; AutoAimPrefs.setFeltHueDeg(it) }
+        floatSlider(
+            "Felt hue tolerance", 0f, 180f, Tunables.feltHueToleranceDeg, 180, { "%.0f°".format(it) }
+        ) { Tunables.feltHueToleranceDeg = it; AutoAimPrefs.setFeltHueToleranceDeg(it) }
+        intSlider("Felt saturation", 0, 255, Tunables.feltSat) {
+            Tunables.feltSat = it; AutoAimPrefs.setFeltSat(it)
+        }
+        intSlider("Felt saturation tolerance", 0, 255, Tunables.feltSatTolerance) {
+            Tunables.feltSatTolerance = it; AutoAimPrefs.setFeltSatTolerance(it)
+        }
+        intSlider("Felt brightness (value)", 0, 255, Tunables.feltVal) {
+            Tunables.feltVal = it; AutoAimPrefs.setFeltVal(it)
+        }
+        intSlider("Felt brightness tolerance", 0, 255, Tunables.feltValTolerance) {
+            Tunables.feltValTolerance = it; AutoAimPrefs.setFeltValTolerance(it)
+        }
+
+        sectionLabel("Rail / Cushion Color (optional, HSV mode)")
+        hint("Off by default. Turn on if a brown guideline near the rail is getting contaminated by the wood cushion color — same close-in-hue-AND-sat-AND-value rule, applied as a second background class alongside felt.")
+        checkbox("Exclude rail/cushion color", Tunables.railExclusionEnabled) {
+            Tunables.railExclusionEnabled = it; AutoAimPrefs.setRailExclusionEnabled(it)
+        }
+        floatSlider(
+            "Rail hue", 0f, 360f, Tunables.railHueDeg, 360, { "%.0f°".format(it) }
+        ) { Tunables.railHueDeg = it; AutoAimPrefs.setRailHueDeg(it) }
+        floatSlider(
+            "Rail hue tolerance", 0f, 180f, Tunables.railHueToleranceDeg, 180, { "%.0f°".format(it) }
+        ) { Tunables.railHueToleranceDeg = it; AutoAimPrefs.setRailHueToleranceDeg(it) }
+        intSlider("Rail saturation", 0, 255, Tunables.railSat) {
+            Tunables.railSat = it; AutoAimPrefs.setRailSat(it)
+        }
+        intSlider("Rail saturation tolerance", 0, 255, Tunables.railSatTolerance) {
+            Tunables.railSatTolerance = it; AutoAimPrefs.setRailSatTolerance(it)
+        }
+        intSlider("Rail brightness (value)", 0, 255, Tunables.railVal) {
+            Tunables.railVal = it; AutoAimPrefs.setRailVal(it)
+        }
+        intSlider("Rail brightness tolerance", 0, 255, Tunables.railValTolerance) {
+            Tunables.railValTolerance = it; AutoAimPrefs.setRailValTolerance(it)
+        }
 
         // ==================== Ray Circle ====================
         sectionLabel("Ray Circle")
@@ -162,6 +312,15 @@ object SettingsPanelBuilder {
         intSlider("Max lines (total segments)", AutoAimPrefs.MAX_LINES_MIN, AutoAimPrefs.MAX_LINES_MAX, Tunables.maxLines) {
             Tunables.maxLines = it; AutoAimPrefs.setMaxLines(it)
         }
+        floatSlider(
+            "Ghost ball size", AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX, AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX,
+            Tunables.ghostBallDiameterPx, 100, { "%.0f px".format(it) }
+        ) {
+            Tunables.ghostBallDiameterPx = it
+            AutoAimPrefs.setGhostBallDiameterPx(it)
+            OverlayController.onGhostBallDiameterChanged(it)
+        }
+        hint("Bug #3 fix: also insets the wall so a bank reflects off the ball's center, not the table edge. Shared by the automatic ray and the manual CUE/TARGET balls — see the Manual Controller section in the main app screen.")
         checkbox("Double line", Tunables.doubleLineEnabled) {
             Tunables.doubleLineEnabled = it; AutoAimPrefs.setDoubleLineEnabled(it)
         }
@@ -179,13 +338,14 @@ object SettingsPanelBuilder {
 
         sectionLabel("Bank Correction Curve")
         hint("Range: -50° to 40°. 90° (dead-on) is fixed at 0 and not adjustable.")
-        val bankSteps = Math.round((AutoAimPrefs.BANK_CORRECTION_MAX - AutoAimPrefs.BANK_CORRECTION_MIN) / 0.1f)
+        val bankStepSize = 0.1f
+        val bankSteps = Math.round((AutoAimPrefs.BANK_CORRECTION_MAX - AutoAimPrefs.BANK_CORRECTION_MIN) / bankStepSize)
         for (i in AutoAimPrefs.BANK_ANGLES.indices) {
             val idx = i
             val angleLabel = AutoAimPrefs.BANK_ANGLES[i].toInt()
-            floatSlider(
+            correctionSlider(
                 "Correction @ ${angleLabel}°", AutoAimPrefs.BANK_CORRECTION_MIN, AutoAimPrefs.BANK_CORRECTION_MAX,
-                AutoAimPrefs.getBankCorrection(idx), bankSteps, { "%.1f°".format(it) }
+                AutoAimPrefs.getBankCorrection(idx), bankSteps, bankStepSize, { "%.1f°".format(it) }
             ) { v ->
                 AutoAimPrefs.setBankCorrection(idx, v)
                 AutoAimPrefs.pushBankCurve()

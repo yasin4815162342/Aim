@@ -26,7 +26,7 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                 CaptureService.start(this, result.resultCode, result.data!!)
-                statusText.text = "Running — switch to the pool app. Only the circle floats on top."
+                statusText.text = "Running — switch to the pool app. Circle + tweak panel float on top."
             } else {
                 statusText.text = "Capture permission denied. Tap Start to retry."
             }
@@ -88,37 +88,37 @@ class MainActivity : ComponentActivity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "\nOnly the Ray Circle floats over other apps. Everything else — every " +
-                "tweak, and table calibration — lives here in the app. Aim-line Show/Hide " +
-                "is in the notification while running."
+            text = "\nTweaks below are shared with the floating tweak panel — change " +
+                "them here or over there, either way. Show/Hide for the aim lines and " +
+                "for the tweak panel itself live in the notification while running. " +
+                "Table calibration is done from the floating panel (you need to see the " +
+                "live overlay over the real table to align the corners). The Manual " +
+                "Controller section further down is only here — it doesn't appear in " +
+                "the floating panel, which is already full."
             textSize = 13f
             setPadding(0, 16, 0, 16)
         })
 
-        // Calibration needs the live overlay already running over the real
-        // table, so it's guarded: if capture hasn't started yet, this just
-        // tells you to start first instead of trying to spin the service
-        // up on its own (which — with no MediaProjection token yet — would
-        // trip Android 14+'s foreground-service-type check and crash).
+        // No calibrate button here on purpose — calibration only makes
+        // sense while the live overlay is already running over the actual
+        // table, so it's exposed from the floating panel instead (see
+        // OverlayController). Everything else is fully shared.
         val settings = SettingsPanelBuilder.build(
             this,
             onChanged = { OverlayController.requestRedraw() },
-            onCalibrate = { onCalibrateTapped() }
+            onCalibrate = null
         )
         root.addView(settings)
 
-        setContentView(scroll)
-    }
-
-    private fun onCalibrateTapped() {
-        if (!OverlayController.isAttached) {
-            statusText.text = "Start capture first (step 2), then Calibrate Table."
-            return
-        }
-        startService(
-            Intent(this, CaptureService::class.java).setAction(CaptureService.ACTION_TOGGLE_CALIBRATION)
+        // Feature request #1: manual CUE/TARGET controller. Exclusively
+        // here, never in the floating panel (already at capacity) — see
+        // ManualControlPanelBuilder.
+        val manualControls = ManualControlPanelBuilder.build(
+            this,
+            onChanged = { OverlayController.requestRedraw() }
         )
-        statusText.text = "Calibration toggled — if boxes appeared, drag them onto opposite rail " +
-            "corners over the real table, then tap Calibrate again to save."
+        root.addView(manualControls)
+
+        setContentView(scroll)
     }
 }

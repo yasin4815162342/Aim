@@ -81,8 +81,9 @@ class CaptureService : Service() {
                 refreshNotification()
                 return START_STICKY
             }
-            ACTION_TOGGLE_CALIBRATION -> {
-                OverlayController.toggleCalibrationMode()
+            ACTION_TOGGLE_TWEAKS -> {
+                OverlayController.toggleTweakPanelVisible()
+                refreshNotification()
                 return START_STICKY
             }
         }
@@ -192,9 +193,11 @@ class CaptureService : Service() {
         )
     }
 
-    // Same Show/Hide + Stop pattern as the Manual app's notification.
+    // Notification with the same Show/Hide + Stop pattern as the Manual
+    // app, plus a Tweaks action to show/hide the floating tweak panel.
     private fun buildNotification(): Notification {
         val visibilityLabel = if (OverlayController.isAimVisible()) "Hide" else "Show"
+        val tweaksLabel = if (OverlayController.isTweakPanelVisible()) "Tweaks: Hide" else "Tweaks: Show"
 
         val stopAction = Notification.Action.Builder(
             Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
@@ -206,6 +209,11 @@ class CaptureService : Service() {
             visibilityLabel, actionPendingIntent(ACTION_TOGGLE_VISIBILITY, 2)
         ).build()
 
+        val tweaksAction = Notification.Action.Builder(
+            Icon.createWithResource(this, android.R.drawable.ic_menu_edit),
+            tweaksLabel, actionPendingIntent(ACTION_TOGGLE_TWEAKS, 3)
+        ).build()
+
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_crop)
             .setContentTitle("LineDebugger running")
@@ -213,6 +221,7 @@ class CaptureService : Service() {
             .setOngoing(true)
             .addAction(stopAction)
             .addAction(visibilityAction)
+            .addAction(tweaksAction)
             .build()
     }
 
@@ -237,7 +246,7 @@ class CaptureService : Service() {
 
         const val ACTION_STOP = "com.yas.linedebugger.STOP"
         const val ACTION_TOGGLE_VISIBILITY = "com.yas.linedebugger.TOGGLE_VISIBILITY"
-        const val ACTION_TOGGLE_CALIBRATION = "com.yas.linedebugger.TOGGLE_CALIBRATION"
+        const val ACTION_TOGGLE_TWEAKS = "com.yas.linedebugger.TOGGLE_TWEAKS"
 
         fun start(context: Context, resultCode: Int, data: Intent) {
             val intent = Intent(context, CaptureService::class.java)
