@@ -174,6 +174,41 @@ object ManualControlPanelBuilder {
         }
         hint("Bug #3 fix applies here too: the ghost ball sits flush against the calibrated rail with its center — not its edge — as the bounce/reflection point.")
 
+        sectionLabel("Kiss Shot")
+        hint("Adds two more draggable points: KISS (magenta ball — place on the ball TARGET will kiss off of) and DEST (red dot — place on the pocket). A green dot shows where on KISS's edge contact needs to happen for TARGET to deflect into DEST. Solved against the game's real ball collision physics (0.95 elasticity), using the CUE->TARGET line as TARGET's approach direction.")
+        checkbox("Enable Kiss Shot assist", Tunables.manualKissEnabled) {
+            OverlayController.setManualKissEnabled(it)
+        }
+
+        floatSlider(
+            "Kiss ball-size calibration",
+            AutoAimPrefs.MANUAL_KISS_RADIUS_SCALE_MIN_PERCENT, AutoAimPrefs.MANUAL_KISS_RADIUS_SCALE_MAX_PERCENT,
+            Tunables.manualKissRadiusScalePercent, 40, { "%.0f%%".format(it) }
+        ) { Tunables.manualKissRadiusScalePercent = it; AutoAimPrefs.setManualKissRadiusScalePercent(it) }
+        hint("If kiss shots consistently land short/long of the pocket, the game's ball collision size probably doesn't quite match the ghost-ball diameter above — tune this until it lines up.")
+
+        floatSlider(
+            "Kiss fine-tune correction",
+            AutoAimPrefs.MANUAL_KISS_THROW_ANGLE_MIN_DEG, AutoAimPrefs.MANUAL_KISS_THROW_ANGLE_MAX_DEG,
+            Tunables.manualKissThrowAngleDeg, 32, { "%.1f°".format(it) }
+        ) { Tunables.manualKissThrowAngleDeg = it; AutoAimPrefs.setManualKissThrowAngleDeg(it) }
+        hint("The collision math itself (0.95 elasticity) is now solved exactly from the game's real physics data. This just mops up what isn't modeled — spin-driven throw and any leftover engine/calibration slop — so it should need only small nudges.")
+
+        val sideRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        fun sideButton(text: String, value: Int) {
+            sideRow.addView(Button(context).apply {
+                this.text = text
+                setOnClickListener {
+                    Tunables.manualKissSideLock = value
+                    AutoAimPrefs.setManualKissSideLock(value)
+                    onChanged()
+                }
+            })
+        }
+        sideButton("Auto", 0); sideButton("Side A", 1); sideButton("Side B", 2)
+        root.addView(sideRow)
+        hint("Two mirror-image contact points always solve the geometry — Auto picks whichever matches where TARGET currently is. If it flips unexpectedly while dragging, lock it to Side A/B.")
+
         return root
     }
 }

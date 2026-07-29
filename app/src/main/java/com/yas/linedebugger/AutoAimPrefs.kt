@@ -105,6 +105,12 @@ object AutoAimPrefs {
     private const val KEY_MANUAL_DASHED_LINE_ENABLED = "manual_dashed_line_enabled"
     private const val KEY_MANUAL_GHOST_RAIL_ENABLED = "manual_ghost_rail_enabled"
 
+    // Manual KISS / DEST controller (kiss-shot assist)
+    private const val KEY_MANUAL_KISS_ENABLED = "manual_kiss_enabled"
+    private const val KEY_MANUAL_KISS_RADIUS_SCALE_PERCENT = "manual_kiss_radius_scale_percent"
+    private const val KEY_MANUAL_KISS_THROW_ANGLE_DEG = "manual_kiss_throw_angle_deg"
+    private const val KEY_MANUAL_KISS_SIDE_LOCK = "manual_kiss_side_lock"
+
     // ---------------- Defaults & ranges ----------------
 
     const val GREEN_DIFF_MIN = 0
@@ -275,6 +281,29 @@ object AutoAimPrefs {
     const val MANUAL_DOUBLE_LINE_WIDTH_OFFSET_MAX_PX = 6f
     const val DEFAULT_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX = 0f
 
+    // ---- Manual KISS / DEST controller (kiss-shot assist) ----
+    const val DEFAULT_MANUAL_KISS_ENABLED = false
+
+    // Tweak 1 — ball-size calibration for the kiss solve only (percent of
+    // the shared ghost-ball diameter). Kept separate from the shared
+    // ghostBallDiameterPx slider since kiss geometry is far more sensitive
+    // to a size mismatch than plain ghost-ball aiming is.
+    const val MANUAL_KISS_RADIUS_SCALE_MIN_PERCENT = 80f
+    const val MANUAL_KISS_RADIUS_SCALE_MAX_PERCENT = 120f
+    const val DEFAULT_MANUAL_KISS_RADIUS_SCALE_PERCENT = 100f
+
+    // Tweak 2 — residual correction, in degrees: covers ball_friction's
+    // spin-transfer throw (not modeled — needs simulated spin/speed) plus
+    // any engine/calibration slop. The elasticity (0.95) deviation itself
+    // is now solved exactly in KissShot, so this only has to cover the
+    // leftover — hence the narrower range than a plain guess would need.
+    const val MANUAL_KISS_THROW_ANGLE_MIN_DEG = -8f
+    const val MANUAL_KISS_THROW_ANGLE_MAX_DEG = 8f
+    const val DEFAULT_MANUAL_KISS_THROW_ANGLE_DEG = 0f
+
+    // Tweak 3 — which of the two mirror solutions to use.
+    const val DEFAULT_MANUAL_KISS_SIDE_LOCK = KissShot.SIDE_AUTO
+
     // ---------------- Getters / setters ----------------
 
     fun getGreenDiff() = prefs.getInt(KEY_GREEN_DIFF, DEFAULT_GREEN_DIFF)
@@ -438,6 +467,21 @@ object AutoAimPrefs {
     fun isManualGhostRailEnabled() = prefs.getBoolean(KEY_MANUAL_GHOST_RAIL_ENABLED, DEFAULT_MANUAL_GHOST_RAIL_ENABLED)
     fun setManualGhostRailEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_GHOST_RAIL_ENABLED, v).apply() }
 
+    // ---- Manual KISS / DEST controller getters/setters ----
+
+    fun isManualKissEnabled() = prefs.getBoolean(KEY_MANUAL_KISS_ENABLED, DEFAULT_MANUAL_KISS_ENABLED)
+    fun setManualKissEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_KISS_ENABLED, v).apply() }
+
+    fun getManualKissRadiusScalePercent() =
+        prefs.getFloat(KEY_MANUAL_KISS_RADIUS_SCALE_PERCENT, DEFAULT_MANUAL_KISS_RADIUS_SCALE_PERCENT)
+    fun setManualKissRadiusScalePercent(v: Float) { prefs.edit().putFloat(KEY_MANUAL_KISS_RADIUS_SCALE_PERCENT, v).apply() }
+
+    fun getManualKissThrowAngleDeg() = prefs.getFloat(KEY_MANUAL_KISS_THROW_ANGLE_DEG, DEFAULT_MANUAL_KISS_THROW_ANGLE_DEG)
+    fun setManualKissThrowAngleDeg(v: Float) { prefs.edit().putFloat(KEY_MANUAL_KISS_THROW_ANGLE_DEG, v).apply() }
+
+    fun getManualKissSideLock() = prefs.getInt(KEY_MANUAL_KISS_SIDE_LOCK, DEFAULT_MANUAL_KISS_SIDE_LOCK)
+    fun setManualKissSideLock(v: Int) { prefs.edit().putInt(KEY_MANUAL_KISS_SIDE_LOCK, v).apply() }
+
     /**
      * Copies every persisted value into the live [Tunables] cache and
      * refreshes the [BankShot] correction curve. Safe to call more than
@@ -499,6 +543,11 @@ object AutoAimPrefs {
         Tunables.manualDoubleLineWidthOffsetPx = getManualDoubleLineWidthOffsetPx()
         Tunables.manualDashedLineEnabled = isManualDashedLineEnabled()
         Tunables.manualGhostRailEnabled = isManualGhostRailEnabled()
+
+        Tunables.manualKissEnabled = isManualKissEnabled()
+        Tunables.manualKissRadiusScalePercent = getManualKissRadiusScalePercent()
+        Tunables.manualKissThrowAngleDeg = getManualKissThrowAngleDeg()
+        Tunables.manualKissSideLock = getManualKissSideLock()
 
         pushBankCurve()
     }

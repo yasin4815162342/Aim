@@ -110,6 +110,17 @@ object OverlayController {
     private var manualCueHandle: ManualHandle? = null
     private var manualTargetHandle: ManualHandle? = null
 
+    // --- Manual KISS / DEST controller state (kiss-shot assist) ---
+    // KISS sits on the ball being kissed off of, DEST on the pocket. Only
+    // attached while Tunables.manualKissEnabled is true, on top of the
+    // main manual controller being enabled.
+    @Volatile var manualKissX: Float = 0f
+    @Volatile var manualKissY: Float = 0f
+    @Volatile var manualDestX: Float = 0f
+    @Volatile var manualDestY: Float = 0f
+    private var manualKissHandle: ManualHandle? = null
+    private var manualDestHandle: ManualHandle? = null
+
     private const val OVERLAY_TYPE = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 
     private fun WindowManager.LayoutParams.applyFullScreenFlags() {
@@ -323,6 +334,8 @@ object OverlayController {
         runCatching { wm.updateViewLayout(hView, params) }
         manualCueHandle?.setHidden(!Tunables.aimVisible)
         manualTargetHandle?.setHidden(!Tunables.aimVisible)
+        manualKissHandle?.setHidden(!Tunables.aimVisible)
+        manualDestHandle?.setHidden(!Tunables.aimVisible)
     }
 
     private fun applyPanelVisibility(panel: View, params: WindowManager.LayoutParams) {
@@ -460,6 +473,8 @@ object OverlayController {
             svc, wm, screenWidth, screenHeight, ManualRole.TARGET, manualTargetX, manualTargetY
         ) { x, y -> manualTargetX = x; manualTargetY = y; drawView?.invalidate() }
 
+        if (Tunables.manualKissEnabled) attachManualKissHandles()
+
         applyHandleVisibility()
         drawView?.invalidate()
     }
@@ -467,6 +482,45 @@ object OverlayController {
     private fun detachManualHandles() {
         manualCueHandle?.remove(); manualCueHandle = null
         manualTargetHandle?.remove(); manualTargetHandle = null
+        detachManualKissHandles()
+        drawView?.invalidate()
+    }
+
+    /** Called by the "Enable Kiss Shot assist" checkbox. Same
+     * safe-to-call-anytime contract as [setManualControllerEnabled]. */
+    fun setManualKissEnabled(enabled: Boolean) {
+        Tunables.manualKissEnabled = enabled
+        AutoAimPrefs.setManualKissEnabled(enabled)
+        if (enabled) attachManualKissHandles() else detachManualKissHandles()
+        drawView?.invalidate()
+    }
+
+    private fun attachManualKissHandles() {
+        val svc = service ?: return
+        val wm = windowManager ?: return
+        if (!Tunables.manualControllerEnabled) return // needs CUE/TARGET as the base shot
+        if (manualKissHandle != null) return // already attached
+
+        manualKissX = screenWidth * 0.65f
+        manualKissY = screenHeight * 0.30f
+        manualDestX = screenWidth * 0.15f
+        manualDestY = screenHeight * 0.15f
+
+        manualKissHandle = ManualHandle(
+            svc, wm, screenWidth, screenHeight, ManualRole.KISS, manualKissX, manualKissY
+        ) { x, y -> manualKissX = x; manualKissY = y; drawView?.invalidate() }
+
+        manualDestHandle = ManualHandle(
+            svc, wm, screenWidth, screenHeight, ManualRole.DEST, manualDestX, manualDestY
+        ) { x, y -> manualDestX = x; manualDestY = y; drawView?.invalidate() }
+
+        applyHandleVisibility()
+        drawView?.invalidate()
+    }
+
+    private fun detachManualKissHandles() {
+        manualKissHandle?.remove(); manualKissHandle = null
+        manualDestHandle?.remove(); manualDestHandle = null
         drawView?.invalidate()
     }
 
@@ -477,6 +531,7 @@ object OverlayController {
     fun onGhostBallDiameterChanged(newDiameterPx: Float) {
         manualCueHandle?.setVisualDiameter(newDiameterPx)
         manualTargetHandle?.setVisualDiameter(newDiameterPx)
+        manualKissHandle?.setVisualDiameter(newDiameterPx)
         drawView?.invalidate()
     }
 
@@ -572,6 +627,8 @@ object OverlayController {
         edgeBDPad?.remove(); edgeBDPad = null
         manualCueHandle?.remove(); manualCueHandle = null
         manualTargetHandle?.remove(); manualTargetHandle = null
+        manualKissHandle?.remove(); manualKissHandle = null
+        manualDestHandle?.remove(); manualDestHandle = null
         drawView = null; handleView = null; panelView = null; windowManager = null
         service = null
         calibrationMode = false
@@ -816,7 +873,7 @@ private class DPadView(context: Context) : View(context) {
  * center dot; TARGET draws as a black-tinted square handle with NO ball
  * outline. That asymmetry is intentional and ported verbatim from the
  * Manual app's DraggableHandle — see ManualHandleView. */
-private enum class ManualRole { CUE, TARGET }
+private enum class ManualRole { CUE, TARGET, KISS, DEST }
 
 /**
  * A draggable CUE or TARGET ball handle for the manual controller — ported
@@ -935,10 +992,9 @@ private class ManualHandle(
 
 /**
  * Visual for a manual handle — a big translucent hitbox (red circle for
- * CUE, black square for TARGET) plus a ball-diameter ghost-ball outline
- * with a red center dot for BOTH roles. The ghost ball on TARGET must
- * always be visible; only the bank-shot trajectory line is gated on
- * "TARGET is on a rail."
+ * CUE, black square for TARGET/KISS) plus a ball-diameter ghost-ball
+ * outline with a red center dot for CUE/TARGET/KISS. DEST is just a small
+ * red dot (no ball involved, it's a pocket aim point).
  */
 private class ManualHandleView(
     context: Context,
@@ -952,12 +1008,10 @@ private class ManualHandleView(
     }
     private val controllerFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        if (role == ManualRole.CUE) {
-            color = Color.RED
-            alpha = 40
-        } else {
-            color = Color.BLACK
-            alpha = 45
+        when (role) {
+            ManualRole.CUE -> { color = Color.RED; alpha = 40 }
+            ManualRole.KISS -> { color = Color.MAGENTA; alpha = 45 }
+            else -> { color = Color.BLACK; alpha = 45 }
         }
     }
     private val centerDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -975,13 +1029,20 @@ private class ManualHandleView(
         val cy = height / 2f
         val ch = minOf(width, height) / 2f - 8f
 
+        if (role == ManualRole.DEST) {
+            // Just a pocket-aim dot — no ball, no ghost ring.
+            canvas.drawCircle(cx, cy, 16f, centerDot)
+            canvas.drawCircle(cx, cy, 16f, outline)
+            return
+        }
+
         if (role == ManualRole.CUE) {
             canvas.drawCircle(cx, cy, ch, controllerFill)
         } else {
             canvas.drawRect(cx - ch, cy - ch, cx + ch, cy + ch, controllerFill)
         }
 
-        // Ghost ball always drawn for both CUE and TARGET.
+        // Ghost ball always drawn for CUE, TARGET, and KISS.
         val r = visualDiameterPx / 2f - outline.strokeWidth / 2f
         if (r > 1f) {
             canvas.drawCircle(cx, cy, r, outline)
@@ -1072,6 +1133,19 @@ class DrawOverlayView(context: Context) : View(context) {
     }
     private val manualMarkerDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL; color = Color.RED
+    }
+
+    // Kiss-shot assist paints: green contact dot on purple's edge, and
+    // guide lines (TARGET->ghost = where Blue must travel; ghost->DEST =
+    // Blue's expected path after the kiss).
+    private val kissContactDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL; color = Color.GREEN
+    }
+    private val kissContactRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; color = Color.GREEN; strokeWidth = 3f
+    }
+    private val kissGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; color = Color.GREEN; strokeWidth = 3f; alpha = 200
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -1457,6 +1531,29 @@ class DrawOverlayView(context: Context) : View(context) {
                 val py = dx * doubleHalfWidth
                 canvas.drawLine(cueX + px, cueY + py, endNearX + px, endNearY + py, manualDoublePaint)
                 canvas.drawLine(cueX - px, cueY - py, endNearX - px, endNearY - py, manualDoublePaint)
+            }
+        }
+
+        // ---- Kiss shot assist: independent of bank/rail state, since the
+        //      object ball (TARGET) can kiss off another ball anywhere on
+        //      the table, not just off a rail. ----
+        if (Tunables.manualKissEnabled) {
+            val kissX = OverlayController.manualKissX
+            val kissY = OverlayController.manualKissY
+            val destX = OverlayController.manualDestX
+            val destY = OverlayController.manualDestY
+            val solved = KissShot.solve(
+                kissX, kissY, destX, destY, targetX, targetY, cueX, cueY,
+                Tunables.ghostBallDiameterPx, Tunables.manualKissRadiusScalePercent,
+                Tunables.manualKissThrowAngleDeg, Tunables.manualKissSideLock
+            )
+            if (solved != null) {
+                val ghostX = solved[0]; val ghostY = solved[1]
+                val contactX = solved[2]; val contactY = solved[3]
+                canvas.drawLine(targetX, targetY, ghostX, ghostY, kissGuidePaint)
+                canvas.drawLine(ghostX, ghostY, destX, destY, kissGuidePaint)
+                canvas.drawCircle(contactX, contactY, 8f, kissContactDot)
+                canvas.drawCircle(contactX, contactY, 8f, kissContactRing)
             }
         }
 
