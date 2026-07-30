@@ -78,9 +78,16 @@ object OverlayController {
     private const val LOCK_HOLD = 6            // frames to keep a good lock on the *same* line
     private const val ANGLE_TOL = 0.18         // ~10 degrees - considered "same line"
 
-    // Temporal EMA on displayed angle / centroid — kills per-frame jitter from
-    // pixel noise without adding multi-second lag. Alpha closer to 1 = snappier.
+    // Displayed angle/centroid filter. A plain EMA scales its response to
+    // the size of the input delta, so real-but-small movements barely move
+    // the output — looks like "no reaction" on slow drags even though it's
+    // technically converging. Fix: below the noise floor (single-frame
+    // pixel jitter) -> light EMA; above it -> snap the full delta, since
+    // anything that size is real motion, not noise, and shouldn't be
+    // rationed out over several frames.
     private const val SMOOTH_ALPHA = 0.42
+    private const val ANGLE_NOISE_FLOOR = 0.006   // rad (~0.34°)
+    private const val OFFSET_NOISE_FLOOR = 0.6f   // px
     private var smoothAngle: Double = 0.0
     private var smoothOffX: Float = 0f
     private var smoothOffY: Float = 0f
@@ -594,12 +601,14 @@ object OverlayController {
                 var d = base.angleRad - smoothAngle
                 while (d > Math.PI / 2) d -= Math.PI
                 while (d < -Math.PI / 2) d += Math.PI
-                smoothAngle += SMOOTH_ALPHA * d
+                smoothAngle += if (abs(d) > ANGLE_NOISE_FLOOR) d else SMOOTH_ALPHA * d
                 // Keep in (-π/2, π/2] for stability
                 if (smoothAngle > Math.PI / 2) smoothAngle -= Math.PI
                 if (smoothAngle <= -Math.PI / 2) smoothAngle += Math.PI
-                smoothOffX += (SMOOTH_ALPHA * (base.offsetX - smoothOffX)).toFloat()
-                smoothOffY += (SMOOTH_ALPHA * (base.offsetY - smoothOffY)).toFloat()
+                val dx = base.offsetX - smoothOffX
+                val dy = base.offsetY - smoothOffY
+                smoothOffX += if (abs(dx) > OFFSET_NOISE_FLOOR) dx else SMOOTH_ALPHA * dx
+                smoothOffY += if (abs(dy) > OFFSET_NOISE_FLOOR) dy else SMOOTH_ALPHA * dy
             }
             lastResult = base.copy(
                 angleRad = smoothAngle,

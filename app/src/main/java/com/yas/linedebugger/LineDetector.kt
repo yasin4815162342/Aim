@@ -37,6 +37,19 @@ object LineDetector {
     private var brightnessBuf: IntArray = IntArray(0)
     private var rejectedRailBuf: BooleanArray = BooleanArray(0)
 
+    // Weight = brightness ABOVE the inclusion threshold, not raw brightness.
+    // The candidate mask is a hard cut (bright > minBrightness), so a pixel
+    // one unit above the line and one unit below it get weight ~full vs 0 —
+    // a discontinuity that isn't symmetric across the true (sub-pixel) line
+    // when the two sides' backgrounds composite differently under AA (e.g.
+    // rail vs felt), biasing the centroid toward whichever side crosses the
+    // threshold at a smaller true coverage fraction. Weighting by distance
+    // above the threshold instead makes near-threshold pixels contribute
+    // almost nothing — approximating true coverage — so that bias shrinks
+    // instead of being carried at nearly full strength into the fit.
+    private fun edgeWeight(bright: Int): Float =
+        (bright - Tunables.minBrightness).toFloat().coerceAtLeast(0.05f)
+
     private fun ensureScratch(n: Int) {
         if (candidateBuf.size < n) {
             candidateBuf = BooleanArray(n)
@@ -216,7 +229,7 @@ object LineDetector {
             for (row in 0 until size) for (col in 0 until size) {
                 val i = row * size + col
                 if (lineMask[i]) {
-                    val w = brightness[i].toFloat().coerceAtLeast(1f)
+                    val w = edgeWeight(brightness[i])
                     xs.add(col); ys.add(row); ws.add(w)
                     totalW += w
                 }
@@ -440,7 +453,7 @@ object LineDetector {
                 var totalW = 0f
                 for (i in 0 until tail) {
                     val px = qx[i]; val py = qy[i]
-                    val w = brightness[py * size + px].toFloat().coerceAtLeast(1f)
+                    val w = edgeWeight(brightness[py * size + px])
                     xs.add(px); ys.add(py); ws.add(w)
                     totalW += w
                 }
