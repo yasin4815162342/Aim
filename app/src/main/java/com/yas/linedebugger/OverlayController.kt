@@ -607,8 +607,8 @@ object OverlayController {
                 if (smoothAngle <= -Math.PI / 2) smoothAngle += Math.PI
                 val dx = base.offsetX - smoothOffX
                 val dy = base.offsetY - smoothOffY
-                smoothOffX += if (abs(dx) > OFFSET_NOISE_FLOOR) dx else SMOOTH_ALPHA * dx
-                smoothOffY += if (abs(dy) > OFFSET_NOISE_FLOOR) dy else SMOOTH_ALPHA * dy
+                smoothOffX += if (abs(dx) > OFFSET_NOISE_FLOOR) dx else (SMOOTH_ALPHA * dx).toFloat()
+                smoothOffY += if (abs(dy) > OFFSET_NOISE_FLOOR) dy else (SMOOTH_ALPHA * dy).toFloat()
             }
             lastResult = base.copy(
                 angleRad = smoothAngle,
