@@ -8,22 +8,28 @@ import kotlin.math.sin
 
 /**
  * Rail-reflection math for the Bank Shot ecosystem — rewritten to follow
- * the real game's Chipmunk physics engine (PoolPhysics.js) exactly for
- * anything bank-shot related: a rail (side_rail / end_rail) in that engine
- * has elasticity 1, i.e. a perfectly elastic, angle-preserving mirror
- * bounce with no artificial bend baked in. That's now this app's default
- * behavior too — given an incoming travel direction and which pair of
- * walls it hit (vertical rail = left/right, horizontal rail = top/bottom),
- * it reflects the vector exactly, the same way Chipmunk's solver would.
+ * the real game's Chipmunk physics engine (PoolPhysics.js / chipmunk.js)
+ * for anything bank-shot related. This is NOT a plain mirror bounce: a
+ * rail-vs-ball collision combines the ball's own elasticity (0.95) with
+ * the rail's (1) — giving 0.95 net restitution, not 1 — and friction
+ * (ball 0.1 × rail 0.8 = 0.08) acts on the tangential contact velocity.
+ * Because that friction impulse is applied at the contact point (offset
+ * from the ball's center), it also imparts torque, converting some
+ * tangential motion into spin — an effect that is NOT uniform across
+ * incoming angles. Net result: replaying Chipmunk's own sequential-impulse
+ * formulas for a clean no-spin first bounce shows the ball comes off
+ * tighter than a mirror almost everywhere (biggest gap around 64°), true
+ * mirror only around 18°, then slightly wider than a mirror from about
+ * 16° down to 4°. See AutoAimPrefs.DEFAULT_BANK_CORRECTIONS for the
+ * derived per-angle values that encode this curve by default.
  *
  * The old rebound-intensity master slider is gone — there's no longer a
- * global scale knob sitting between the correction curve and the reflection,
- * since Chipmunk doesn't have one either. The per-angle correction curve
- * itself is kept as an optional manual override (e.g. to compensate for a
- * specific physical table that doesn't behave like an ideal e=1 rail), but
- * every control point defaults to 0° — so out of the box this is a pure
- * Chipmunk-style reflection, and any bend is something the user dials in
- * on purpose.
+ * global scale knob sitting between the correction curve and the
+ * reflection, since Chipmunk doesn't have one either. The per-angle
+ * correction curve is still a slider a user can nudge further (e.g. to
+ * compensate for a specific physical table), but it now starts from the
+ * real Chipmunk-derived shape instead of a hand-tuned guess or a flat
+ * zero.
  *
  * Correction is added directly to the theta-from-normal angle and the
  * vector is rebuilt from that angle, rather than applied as a raw 2D
@@ -47,9 +53,8 @@ object BankShot {
     // Live curve. Index 0 (90°) and the last index (0°) are never written by
     // updateCorrectionCurve below, so they stay at FloatArray's zero default
     // permanently — both endpoints are hard-locked to 0 by construction, not
-    // just by convention. Every other slot defaults to 0 too now (see
-    // AutoAimPrefs.DEFAULT_BANK_CORRECTIONS), so a fresh install reflects
-    // exactly like Chipmunk's e=1 rail until the user manually nudges one.
+    // just by convention. Every other slot is seeded from the Chipmunk-derived
+    // curve in AutoAimPrefs.DEFAULT_BANK_CORRECTIONS on first load.
     private val corrections = FloatArray(angles.size)
 
     /** rawCorrections must have angles.size - 2 entries, ordered to match

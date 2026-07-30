@@ -212,19 +212,27 @@ object AutoAimPrefs {
     const val BANK_CORRECTION_MAX = 40f
 
     // Angle control points, 90° and 0° locked at 0 (see BankShot) and have
-    // no sliders; these 22 cover the range where a manual correction could
-    // matter. Every default is now 0° — the Bank Shot ecosystem follows the
-    // Chipmunk codebase's rail exactly (side_rail / end_rail: elasticity 1,
-    // a perfectly elastic mirror bounce), so out of the box there's no
-    // artificial per-angle bend. The sliders stay available for anyone who
-    // wants to manually compensate for a specific physical table.
+    // no sliders; these 22 cover the range where a correction actually
+    // matters. Defaults below are NOT flat zero — they're derived by
+    // replaying Chipmunk's own sequential-impulse rail collision formulas
+    // (k_scalar / apply_impulse from chipmunk.js, combined ball×rail
+    // elasticity 0.95×1=0.95 and friction 0.1×0.8=0.08 from physicsData.js)
+    // for a clean, no-spin, no-english first bounce — the same simplifying
+    // assumption the curve itself already relies on. A true e=1 mirror was
+    // never right: friction at the contact point converts some tangential
+    // motion into ball spin via torque, which is NOT uniform across angles.
+    // The result: the bank comes off tighter than a mirror (correction
+    // negative) almost everywhere, peaking near 64°, crosses back to a true
+    // mirror around 18°, then flips to a small "wider than mirror" effect
+    // (positive) from 16° down to 4°. The sliders stay available for anyone
+    // who wants to further compensate for a specific physical table.
     val BANK_ANGLES = floatArrayOf(
         88f, 84f, 80f, 76f, 72f, 68f, 64f, 60f, 56f, 52f, 48f,
         44f, 40f, 36f, 32f, 28f, 24f, 20f, 16f, 12f, 8f, 4f
     )
     val DEFAULT_BANK_CORRECTIONS = floatArrayOf(
-        0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f,
-        0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f
+        -0.55f, -1.64f, -2.71f, -3.75f, -4.74f, -5.67f, -6.52f, -6.08f, -5.37f, -4.65f, -3.92f,
+        -3.21f, -2.53f, -1.90f, -1.33f, -0.85f, -0.44f, -0.13f, 0.08f, 0.20f, 0.23f, 0.16f
     )
 
     const val DEFAULT_AIM_VISIBLE = true
