@@ -78,16 +78,53 @@ object OverlayController {
     private const val LOCK_HOLD = 6            // frames to keep a good lock on the *same* line
     private const val ANGLE_TOL = 0.18         // ~10 degrees - considered "same line"
 
-    // Displayed angle/centroid filter. A plain EMA scales its response to
-    // the size of the input delta, so real-but-small movements barely move
-    // the output — looks like "no reaction" on slow drags even though it's
-    // technically converging. Fix: below the noise floor (single-frame
-    // pixel jitter) -> light EMA; above it -> snap the full delta, since
-    // anything that size is real motion, not noise, and shouldn't be
-    // rationed out over several frames.
-    private const val SMOOTH_ALPHA = 0.42
-    private const val ANGLE_NOISE_FLOOR = 0.006   // rad (~0.34°)
-    private const val OFFSET_NOISE_FLOOR = 0.6f   // px
+    // Displayed angle/centroid filter. Plain EMA and deadband+snap both
+    // failed here: EMA scales response to delta size (small real motion
+    // gets lost); snap-above-floor removes lag but also removes noise
+    // rejection, so it shows raw per-frame jitter during motion (the
+    // "throbbing while dragging, locks when still" symptom). One Euro
+    // filter fixes both: smoothing strength is driven by estimated speed —
+    // heavy smoothing near-zero speed (kills jitter, converges to exact
+    // value once stopped), light smoothing at drag speed (kills jitter
+    // without re-adding lag).
+    private class OneEuroFilter(
+        val minCutoff: Double,
+        val beta: Double,
+        val dCutoff: Double = 1.0
+    ) {
+        private var xPrev: Double = 0.0
+        private var dxPrev: Double = 0.0
+        private var lastTimeMs: Long = -1L
+        private var init = false
+
+        private fun alpha(cutoff: Double, dt: Double): Double {
+            val tau = 1.0 / (2.0 * Math.PI * cutoff)
+            return 1.0 / (1.0 + tau / dt)
+        }
+
+        fun reset(x: Double) {
+            xPrev = x; dxPrev = 0.0; lastTimeMs = -1L; init = true
+        }
+
+        fun filter(x: Double, nowMs: Long): Double {
+            if (!init) { reset(x); return x }
+            val dt = ((nowMs - lastTimeMs).coerceAtLeast(1)) / 1000.0
+            lastTimeMs = nowMs
+            val dx = (x - xPrev) / dt
+            val edx = dxPrev + alpha(dCutoff, dt) * (dx - dxPrev)
+            dxPrev = edx
+            val cutoff = minCutoff + beta * abs(edx)
+            val xHat = xPrev + alpha(cutoff, dt) * (x - xPrev)
+            xPrev = xHat
+            return xHat
+        }
+    }
+
+    private val angleFilter = OneEuroFilter(minCutoff = 0.8, beta = 3.0)
+    private val offXFilter = OneEuroFilter(minCutoff = 1.0, beta = 0.03)
+    private val offYFilter = OneEuroFilter(minCutoff = 1.0, beta = 0.03)
+    private var rawAngleUnwrapped: Double = 0.0
+    private var lastRawAngle: Double = 0.0
     private var smoothAngle: Double = 0.0
     private var smoothOffX: Float = 0f
     private var smoothOffY: Float = 0f
@@ -591,24 +628,34 @@ object OverlayController {
 
         val base = lockedResult ?: result
         if (base.hasLine) {
+            val nowMs = android.os.SystemClock.elapsedRealtime()
             if (!smoothInit) {
+                rawAngleUnwrapped = base.angleRad
+                lastRawAngle = base.angleRad
                 smoothAngle = base.angleRad
                 smoothOffX = base.offsetX
                 smoothOffY = base.offsetY
+                angleFilter.reset(base.angleRad)
+                offXFilter.reset(base.offsetX.toDouble())
+                offYFilter.reset(base.offsetY.toDouble())
                 smoothInit = true
             } else {
-                // Shortest-path angle blend on the circle (period π for undirected lines)
-                var d = base.angleRad - smoothAngle
-                while (d > Math.PI / 2) d -= Math.PI
-                while (d < -Math.PI / 2) d += Math.PI
-                smoothAngle += if (abs(d) > ANGLE_NOISE_FLOOR) d else SMOOTH_ALPHA * d
-                // Keep in (-π/2, π/2] for stability
-                if (smoothAngle > Math.PI / 2) smoothAngle -= Math.PI
-                if (smoothAngle <= -Math.PI / 2) smoothAngle += Math.PI
-                val dx = base.offsetX - smoothOffX
-                val dy = base.offsetY - smoothOffY
-                smoothOffX += if (abs(dx) > OFFSET_NOISE_FLOOR) dx else (SMOOTH_ALPHA * dx).toFloat()
-                smoothOffY += if (abs(dy) > OFFSET_NOISE_FLOOR) dy else (SMOOTH_ALPHA * dy).toFloat()
+                // Track the raw angle as a continuously-unwrapped scalar
+                // (shortest-path delta from the last raw sample, not the
+                // filtered one) so the One Euro filter below is a plain
+                // linear filter — no period-π special-casing inside it.
+                var dRaw = base.angleRad - lastRawAngle
+                while (dRaw > Math.PI / 2) dRaw -= Math.PI
+                while (dRaw < -Math.PI / 2) dRaw += Math.PI
+                rawAngleUnwrapped += dRaw
+                lastRawAngle = base.angleRad
+
+                var filtered = angleFilter.filter(rawAngleUnwrapped, nowMs)
+                while (filtered > Math.PI / 2) filtered -= Math.PI
+                while (filtered <= -Math.PI / 2) filtered += Math.PI
+                smoothAngle = filtered
+                smoothOffX = offXFilter.filter(base.offsetX.toDouble(), nowMs).toFloat()
+                smoothOffY = offYFilter.filter(base.offsetY.toDouble(), nowMs).toFloat()
             }
             lastResult = base.copy(
                 angleRad = smoothAngle,
