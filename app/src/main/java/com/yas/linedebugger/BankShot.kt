@@ -7,23 +7,32 @@ import kotlin.math.hypot
 import kotlin.math.sin
 
 /**
- * Rail-reflection math — ported directly from the Manual app's
- * (AimOverlay) bank-shot correction curve so both apps behave identically
- * on a bank. Given an incoming travel direction and which pair of walls it
- * hit (vertical rail = left/right, horizontal rail = top/bottom), returns
- * the outgoing direction after applying the user's per-angle correction
- * curve, scaled by the rebound-intensity master slider.
+ * Rail-reflection math for the Bank Shot ecosystem — rewritten to follow
+ * the real game's Chipmunk physics engine (PoolPhysics.js) exactly for
+ * anything bank-shot related: a rail (side_rail / end_rail) in that engine
+ * has elasticity 1, i.e. a perfectly elastic, angle-preserving mirror
+ * bounce with no artificial bend baked in. That's now this app's default
+ * behavior too — given an incoming travel direction and which pair of
+ * walls it hit (vertical rail = left/right, horizontal rail = top/bottom),
+ * it reflects the vector exactly, the same way Chipmunk's solver would.
  *
- * Restored from the old (Aim-8) implementation: correction is added
- * directly to the theta-from-normal angle and the vector is rebuilt from
- * that angle, rather than applied as a raw 2D rotation of the reflected
- * vector. Adding degrees straight to theta is what makes a slider's
- * number mean what it says — a rotation-based version drifts because a
- * rotation of the vector doesn't equal the same change in this abs-value
- * theta once you're off the first quadrant, so the same slider value
- * could open a bank on one rail and close it on another. That mismatch is
- * what "buggy" was: correction @ 45° behaved differently depending on
- * which rail and which incoming quadrant hit it.
+ * The old rebound-intensity master slider is gone — there's no longer a
+ * global scale knob sitting between the correction curve and the reflection,
+ * since Chipmunk doesn't have one either. The per-angle correction curve
+ * itself is kept as an optional manual override (e.g. to compensate for a
+ * specific physical table that doesn't behave like an ideal e=1 rail), but
+ * every control point defaults to 0° — so out of the box this is a pure
+ * Chipmunk-style reflection, and any bend is something the user dials in
+ * on purpose.
+ *
+ * Correction is added directly to the theta-from-normal angle and the
+ * vector is rebuilt from that angle, rather than applied as a raw 2D
+ * rotation of the reflected vector. Adding degrees straight to theta is
+ * what makes a slider's number mean what it says — a rotation-based
+ * version drifts because a rotation of the vector doesn't equal the same
+ * change in this abs-value theta once you're off the first quadrant, so
+ * the same slider value could open a bank on one rail and close it on
+ * another.
  */
 object BankShot {
 
@@ -35,24 +44,24 @@ object BankShot {
         90f, 88f, 84f, 80f, 76f, 72f, 68f, 64f, 60f, 56f, 52f, 48f,
         44f, 40f, 36f, 32f, 28f, 24f, 20f, 16f, 12f, 8f, 4f, 0f
     )
-    // Live curve, already scaled by rebound intensity. Index 0 (90°) and the
-    // last index (0°) are never written by updateCorrectionCurve below, so
-    // they stay at FloatArray's zero default permanently — both endpoints
-    // are hard-locked to 0 by construction, not just by convention.
+    // Live curve. Index 0 (90°) and the last index (0°) are never written by
+    // updateCorrectionCurve below, so they stay at FloatArray's zero default
+    // permanently — both endpoints are hard-locked to 0 by construction, not
+    // just by convention. Every other slot defaults to 0 too now (see
+    // AutoAimPrefs.DEFAULT_BANK_CORRECTIONS), so a fresh install reflects
+    // exactly like Chipmunk's e=1 rail until the user manually nudges one.
     private val corrections = FloatArray(angles.size)
 
     /** rawCorrections must have angles.size - 2 entries, ordered to match
-     * angles[1..angles.size-2] (88° down to 4°), already scaled by rebound
-     * intensity. The first and last slots (90°, 0°) are left untouched —
-     * they're locked at 0. */
-    fun updateCorrectionCurve(rawCorrections: FloatArray, reboundIntensityPercent: Float) {
-        val scale = reboundIntensityPercent / 100f
+     * angles[1..angles.size-2] (88° down to 4°). The first and last slots
+     * (90°, 0°) are left untouched — they're locked at 0. */
+    fun updateCorrectionCurve(rawCorrections: FloatArray) {
         val last = corrections.size - 1
         corrections[0] = 0f      // 90° — locked
         corrections[last] = 0f   // 0°  — locked
         val n = minOf(rawCorrections.size, last - 1)
         for (i in 0 until n) {
-            corrections[i + 1] = rawCorrections[i] * scale
+            corrections[i + 1] = rawCorrections[i]
         }
     }
 
@@ -82,16 +91,8 @@ object BankShot {
      * Returns the reflected outgoing unit direction as [dx, dy], or null if
      * the incoming direction was degenerate (shouldn't happen in practice —
      * callers should just stop drawing that direction in that case).
-     *
-     * When Tunables.chipmunkMode is true, every correction curve value and
-     * the rebound-intensity slider are ignored — reflection is pure
-     * Chipmunk game physics (rail e=1.0). See BankShotChipmunk.
      */
     fun reflect(dx: Float, dy: Float, hitVertical: Boolean): FloatArray? {
-        if (Tunables.chipmunkMode) {
-            return BankShotChipmunk.reflect(dx, dy, hitVertical)
-        }
-
         val impactAngle = impactAngleDeg(dx, dy, hitVertical)
 
         val normalComp = if (hitVertical) dx else dy

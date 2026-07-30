@@ -107,7 +107,7 @@ object ManualControlPanelBuilder {
         checkbox("Enable manual CUE / TARGET controller", Tunables.manualControllerEnabled) {
             OverlayController.setManualControllerEnabled(it)
         }
-        hint("When enabled, drag the red CUE ball and the black TARGET square that appear over the table. The line always stops short of TARGET (it represents a ball) and, if it reaches a calibrated rail, banks off it exactly like the automatic ray.")
+        hint("When enabled, drag the black CUE square and the red TARGET ball that appear over the table. The line always stops short of TARGET (it represents a ball) and, if it reaches a calibrated rail, banks off it exactly like the automatic ray.")
 
         floatSlider(
             "Drag sensitivity", AutoAimPrefs.MANUAL_SENSITIVITY_MIN, AutoAimPrefs.MANUAL_SENSITIVITY_MAX,

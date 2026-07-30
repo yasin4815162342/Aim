@@ -66,10 +66,8 @@ object AutoAimPrefs {
     private const val KEY_DOUBLE_LINE_WIDTH_PX = "double_line_width_px"
     private const val KEY_BANK_MARKER_ENABLED = "bank_marker_enabled"
     private const val KEY_GHOST_BALL_DIAMETER_PX = "ghost_ball_diameter_px"
-    private const val KEY_CHIPMUNK_MODE = "chipmunk_mode"
 
     private const val KEY_BANK_CORRECTION_PREFIX = "bank_correction_"
-    private const val KEY_REBOUND_INTENSITY = "rebound_intensity"
 
     private const val KEY_TABLE_LEFT = "table_left"
     private const val KEY_TABLE_TOP = "table_top"
@@ -203,32 +201,30 @@ object AutoAimPrefs {
 
     const val DEFAULT_BANK_MARKER_ENABLED = true
 
-    // Chipmunk / game-physics mode (pure rail e=1.0 reflection). Off by
-    // default so existing correction-curve users are unaffected.
-    const val DEFAULT_CHIPMUNK_MODE = false
-
-    // Bug #3: shared ghost-ball diameter — same range/default as the
-    // Manual app's ball-size slider, since it's the same physical ball.
+    // Bug #3: shared ghost-ball diameter. Default now matches the Chipmunk
+    // codebase exactly — PoolPhysics.js sets ball_radius: 20 (ball_w: 40),
+    // so 40px is the real ball's diameter, not the old 60px placeholder.
     const val GHOST_BALL_DIAMETER_MIN_PX = 20f
     const val GHOST_BALL_DIAMETER_MAX_PX = 120f
-    const val DEFAULT_GHOST_BALL_DIAMETER_PX = 60f
+    const val DEFAULT_GHOST_BALL_DIAMETER_PX = 40f
 
     const val BANK_CORRECTION_MIN = -50f
     const val BANK_CORRECTION_MAX = 40f
-    const val REBOUND_INTENSITY_MIN = 0f
-    const val REBOUND_INTENSITY_MAX = 200f
-    const val DEFAULT_REBOUND_INTENSITY = 100f
 
-    // Angle control points + defaults — identical curve to the Manual app.
-    // 90° and 0° are both locked at 0 (see BankShot) and have no sliders;
-    // these 22 cover the range where correction actually matters.
+    // Angle control points, 90° and 0° locked at 0 (see BankShot) and have
+    // no sliders; these 22 cover the range where a manual correction could
+    // matter. Every default is now 0° — the Bank Shot ecosystem follows the
+    // Chipmunk codebase's rail exactly (side_rail / end_rail: elasticity 1,
+    // a perfectly elastic mirror bounce), so out of the box there's no
+    // artificial per-angle bend. The sliders stay available for anyone who
+    // wants to manually compensate for a specific physical table.
     val BANK_ANGLES = floatArrayOf(
         88f, 84f, 80f, 76f, 72f, 68f, 64f, 60f, 56f, 52f, 48f,
         44f, 40f, 36f, 32f, 28f, 24f, 20f, 16f, 12f, 8f, 4f
     )
     val DEFAULT_BANK_CORRECTIONS = floatArrayOf(
-        0.2f, 0.6f, 0.9f, 1.4f, 2.0f, 2.9f, 3.8f, 5.0f, 6.2f, 7.8f, 9.3f,
-        11.2f, 13.0f, 15.0f, 17.0f, 18.8f, 20.5f, 21.8f, 23.0f, 23.8f, 24.5f, 25.0f
+        0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f,
+        0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f
     )
 
     const val DEFAULT_AIM_VISIBLE = true
@@ -371,14 +367,8 @@ object AutoAimPrefs {
     fun getGhostBallDiameterPx() = prefs.getFloat(KEY_GHOST_BALL_DIAMETER_PX, DEFAULT_GHOST_BALL_DIAMETER_PX)
     fun setGhostBallDiameterPx(v: Float) { prefs.edit().putFloat(KEY_GHOST_BALL_DIAMETER_PX, v).apply() }
 
-    fun isChipmunkMode() = prefs.getBoolean(KEY_CHIPMUNK_MODE, DEFAULT_CHIPMUNK_MODE)
-    fun setChipmunkMode(v: Boolean) { prefs.edit().putBoolean(KEY_CHIPMUNK_MODE, v).apply() }
-
     fun getBankCorrection(index: Int) = prefs.getFloat(KEY_BANK_CORRECTION_PREFIX + index, DEFAULT_BANK_CORRECTIONS[index])
     fun setBankCorrection(index: Int, v: Float) { prefs.edit().putFloat(KEY_BANK_CORRECTION_PREFIX + index, v).apply() }
-
-    fun getReboundIntensity() = prefs.getFloat(KEY_REBOUND_INTENSITY, DEFAULT_REBOUND_INTENSITY)
-    fun setReboundIntensity(v: Float) { prefs.edit().putFloat(KEY_REBOUND_INTENSITY, v).apply() }
 
     fun getTableLeft() = prefs.getFloat(KEY_TABLE_LEFT, -1f)
     fun getTableTop() = prefs.getFloat(KEY_TABLE_TOP, -1f)
@@ -533,7 +523,6 @@ object AutoAimPrefs {
         Tunables.doubleLineWidthPx = getDoubleLineWidthPx()
         Tunables.bankMarkerEnabled = isBankMarkerEnabled()
         Tunables.ghostBallDiameterPx = getGhostBallDiameterPx()
-        Tunables.chipmunkMode = isChipmunkMode()
 
         Tunables.tableLeft = getTableLeft()
         Tunables.tableTop = getTableTop()
@@ -563,6 +552,6 @@ object AutoAimPrefs {
 
     fun pushBankCurve() {
         val corrections = FloatArray(BANK_ANGLES.size) { getBankCorrection(it) }
-        BankShot.updateCorrectionCurve(corrections, getReboundIntensity())
+        BankShot.updateCorrectionCurve(corrections)
     }
 }

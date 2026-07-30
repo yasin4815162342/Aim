@@ -45,6 +45,15 @@ private const val DASH_GAP_PX = 16f
 // user-tunable, same as it wasn't in the Manual app.
 private const val MANUAL_HANDLE_HITBOX_PX = 250
 
+// How far (in raw drag pixels) TARGET must be pulled past a calibrated
+// rail edge before it actually lets go and moves back toward the table
+// centre. Only TARGET gets this — it's the bank-shot handle, so sitting
+// perfectly on the rail matters and a stray touch shouldn't be able to
+// bump it off. Sliding TOWARD or ALONG an edge is never resisted, only
+// peeling away from one. CUE (and DEST) keep the plain hard clamp
+// (stickyPx=0).
+private const val TARGET_EDGE_STICKY_PX = 22f
+
 // Bug #5 (artificial-line clipping): the Ray Zone is the Ray Circle's
 // footprint expanded by this factor. No artificial line — main,
 // bank-reflected, or double — may be drawn inside it. Requested range was
@@ -859,10 +868,10 @@ private class DPadView(context: Context) : View(context) {
     }
 }
 
-/** CUE draws as a red-tinted circle handle with a ball outline + red
- * center dot; TARGET draws as a black-tinted square handle with NO ball
- * outline. That asymmetry is intentional and ported verbatim from the
- * Manual app's DraggableHandle — see ManualHandleView. */
+/** TARGET (the bank-shot end) draws as a red-tinted circle handle; CUE
+ * draws as a black-tinted square handle. Both also draw a ball-diameter
+ * ghost-ball outline + red center dot — see ManualHandleView. DEST (kiss
+ * shot) is its own thing: just a small dot, no ball involved. */
 private enum class ManualRole { CUE, TARGET, DEST }
 
 /**
@@ -901,43 +910,115 @@ private class ManualHandle(
 
         var lastRawX = 0f; var lastRawY = 0f
         var exactX = 0f; var exactY = 0f
+        // Sticky-rail state (TARGET only — see TARGET_EDGE_STICKY_PX).
+        // stuckEdge*: -1 = pinned at the min-edge, 0 = free, 1 = pinned at
+        // the max-edge. pullDebt*: how far outward it's been dragged while
+        // pinned, capped at the sticky distance; pushing back INTO the rail
+        // drains it back down instead of going negative, so jitter right at
+        // the wall can't accidentally bank progress toward a release.
+        var stuckEdgeX = 0; var stuckEdgeY = 0
+        var pullDebtX = 0f; var pullDebtY = 0f
         view.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     lastRawX = event.rawX; lastRawY = event.rawY
                     exactX = params.x.toFloat(); exactY = params.y.toFloat()
+                    pullDebtX = 0f; pullDebtY = 0f
+                    // Re-derive "is it currently resting on an edge" from
+                    // where the handle actually is, so a fresh touch on an
+                    // already-pinned TARGET is sticky right away instead of
+                    // only mid-gesture.
+                    stuckEdgeX = 0; stuckEdgeY = 0
+                    if (role == ManualRole.TARGET && Tunables.tableLeft >= 0f) {
+                        val halfHit = MANUAL_HANDLE_HITBOX_PX / 2f
+                        val halfBall = Tunables.ghostBallDiameterPx / 2f
+                        val minCX = Tunables.tableLeft + halfBall
+                        val maxCX = Tunables.tableRight - halfBall
+                        val minCY = Tunables.tableTop + halfBall
+                        val maxCY = Tunables.tableBottom - halfBall
+                        val cx = exactX + halfHit
+                        val cy = exactY + halfHit
+                        if (maxCX > minCX) {
+                            stuckEdgeX = if (cx <= minCX + 0.5f) -1 else if (cx >= maxCX - 0.5f) 1 else 0
+                        }
+                        if (maxCY > minCY) {
+                            stuckEdgeY = if (cy <= minCY + 0.5f) -1 else if (cy >= maxCY - 0.5f) 1 else 0
+                        }
+                    }
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val rawX = event.rawX
                     val rawY = event.rawY
-                    exactX += (rawX - lastRawX) * Tunables.manualSensitivity
-                    exactY += (rawY - lastRawY) * Tunables.manualSensitivity
+                    val dxRaw = (rawX - lastRawX) * Tunables.manualSensitivity
+                    val dyRaw = (rawY - lastRawY) * Tunables.manualSensitivity
+                    val halfHit = MANUAL_HANDLE_HITBOX_PX / 2f
 
                     // When the table is calibrated, the handle centre is
                     // limited to the INSET table rect (table edge ± half
                     // ghost-ball). That way the ghost ball's outer edge
                     // hugs the yellow calibration line — the red-dot
                     // centre never sits on the rail itself.
-                    val halfHit = MANUAL_HANDLE_HITBOX_PX / 2f
                     if (Tunables.tableLeft >= 0f) {
                         val halfBall = Tunables.ghostBallDiameterPx / 2f
                         val minCX = Tunables.tableLeft + halfBall
                         val maxCX = Tunables.tableRight - halfBall
                         val minCY = Tunables.tableTop + halfBall
                         val maxCY = Tunables.tableBottom - halfBall
+                        val stickyPx = if (role == ManualRole.TARGET) TARGET_EDGE_STICKY_PX else 0f
+
+                        if (maxCX > minCX) {
+                            if (stuckEdgeX != 0) {
+                                val outward = if (stuckEdgeX == -1) dxRaw else -dxRaw
+                                pullDebtX = (pullDebtX + outward).coerceIn(0f, stickyPx)
+                                if (pullDebtX >= stickyPx) {
+                                    // Released: place it exactly stickyPx
+                                    // past the rail (how far it was actually
+                                    // dragged while pinned), then resume
+                                    // normal 1:1 tracking from there.
+                                    exactX = (if (stuckEdgeX == -1) minCX + stickyPx else maxCX - stickyPx) - halfHit
+                                    stuckEdgeX = 0
+                                    pullDebtX = 0f
+                                } // else: still pinned — exactX left untouched, sits at the rail
+                            } else {
+                                exactX += dxRaw
+                            }
+                        } else {
+                            exactX += dxRaw
+                        }
+
+                        if (maxCY > minCY) {
+                            if (stuckEdgeY != 0) {
+                                val outward = if (stuckEdgeY == -1) dyRaw else -dyRaw
+                                pullDebtY = (pullDebtY + outward).coerceIn(0f, stickyPx)
+                                if (pullDebtY >= stickyPx) {
+                                    exactY = (if (stuckEdgeY == -1) minCY + stickyPx else maxCY - stickyPx) - halfHit
+                                    stuckEdgeY = 0
+                                    pullDebtY = 0f
+                                }
+                            } else {
+                                exactY += dyRaw
+                            }
+                        } else {
+                            exactY += dyRaw
+                        }
+
                         var cx = exactX + halfHit
                         var cy = exactY + halfHit
                         // Guard against inverted rect if ball > table.
                         if (maxCX > minCX) {
-                            if (cx < minCX) cx = minCX else if (cx > maxCX) cx = maxCX
+                            if (cx < minCX) { cx = minCX; stuckEdgeX = -1; pullDebtX = 0f }
+                            else if (cx > maxCX) { cx = maxCX; stuckEdgeX = 1; pullDebtX = 0f }
                         }
                         if (maxCY > minCY) {
-                            if (cy < minCY) cy = minCY else if (cy > maxCY) cy = maxCY
+                            if (cy < minCY) { cy = minCY; stuckEdgeY = -1; pullDebtY = 0f }
+                            else if (cy > maxCY) { cy = maxCY; stuckEdgeY = 1; pullDebtY = 0f }
                         }
                         exactX = cx - halfHit
                         exactY = cy - halfHit
                     } else {
+                        exactX += dxRaw
+                        exactY += dyRaw
                         val margin = MANUAL_HANDLE_HITBOX_PX * EDGE_LIMIT_FRACTION
                         val minX = -margin
                         val maxX = screenWidth - MANUAL_HANDLE_HITBOX_PX + margin
@@ -950,6 +1031,7 @@ private class ManualHandle(
                     params.x = Math.round(exactX)
                     params.y = Math.round(exactY)
                     lastRawX = rawX; lastRawY = rawY
+
 
                     runCatching { wm.updateViewLayout(view, params) }
                     onMoved(params.x + MANUAL_HANDLE_HITBOX_PX / 2f, params.y + MANUAL_HANDLE_HITBOX_PX / 2f)
@@ -982,7 +1064,7 @@ private class ManualHandle(
 
 /**
  * Visual for a manual handle — a big translucent hitbox (red circle for
- * CUE, black square for TARGET) plus a ball-diameter ghost-ball outline
+ * TARGET, black square for CUE) plus a ball-diameter ghost-ball outline
  * with a red center dot for CUE/TARGET. DEST is just a small red dot
  * (no ball involved, it's a pocket aim point).
  */
@@ -998,7 +1080,7 @@ private class ManualHandleView(
     }
     private val controllerFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        if (role == ManualRole.CUE) {
+        if (role == ManualRole.TARGET) {
             color = Color.RED
             alpha = 40
         } else {
@@ -1028,7 +1110,7 @@ private class ManualHandleView(
             return
         }
 
-        if (role == ManualRole.CUE) {
+        if (role == ManualRole.TARGET) {
             canvas.drawCircle(cx, cy, ch, controllerFill)
         } else {
             canvas.drawRect(cx - ch, cy - ch, cx + ch, cy + ch, controllerFill)

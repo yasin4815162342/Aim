@@ -318,10 +318,6 @@ object SettingsPanelBuilder {
 
         // ==================== Bank Shot ====================
         sectionLabel("Bank Shot")
-        checkbox("Chipmunk mode (game physics)", Tunables.chipmunkMode) {
-            Tunables.chipmunkMode = it; AutoAimPrefs.setChipmunkMode(it)
-        }
-        hint("When on, every bank uses pure Chipmunk reflection from the original pool game (rail elasticity = 1.0). The entire correction curve and rebound-intensity slider below are ignored. Turn off to restore your tuned curve.")
         intSlider("Max lines (total segments)", AutoAimPrefs.MAX_LINES_MIN, AutoAimPrefs.MAX_LINES_MAX, Tunables.maxLines) {
             Tunables.maxLines = it; AutoAimPrefs.setMaxLines(it)
         }
@@ -350,7 +346,7 @@ object SettingsPanelBuilder {
         }
 
         sectionLabel("Bank Correction Curve")
-        hint("Range: -50° to 40°. 90° (dead-on) and 0° (pure graze) are both fixed at 0 and have no sliders — neither one can bank.")
+        hint("Range: -50° to 40°. Every angle defaults to 0° — the Bank Shot ecosystem now follows the Chipmunk codebase's rail exactly (perfectly elastic, e=1 mirror bounce), so a fresh install has no artificial bend. 90° (dead-on) and 0° (pure graze) are both fixed at 0 and have no sliders — neither one can bank. Nudge a slider only if you want to manually compensate for a specific physical table.")
         val bankStepSize = 0.1f
         val bankSteps = Math.round((AutoAimPrefs.BANK_CORRECTION_MAX - AutoAimPrefs.BANK_CORRECTION_MIN) / bankStepSize)
         for (i in AutoAimPrefs.BANK_ANGLES.indices) {
@@ -363,13 +359,6 @@ object SettingsPanelBuilder {
                 AutoAimPrefs.setBankCorrection(idx, v)
                 AutoAimPrefs.pushBankCurve()
             }
-        }
-        floatSlider(
-            "Rebound intensity", AutoAimPrefs.REBOUND_INTENSITY_MIN, AutoAimPrefs.REBOUND_INTENSITY_MAX,
-            AutoAimPrefs.getReboundIntensity(), 200, { "${it.toInt()}%" }
-        ) { v ->
-            AutoAimPrefs.setReboundIntensity(v)
-            AutoAimPrefs.pushBankCurve()
         }
 
         // ==================== Visibility ====================
@@ -386,8 +375,9 @@ object SettingsPanelBuilder {
         }
 
         // Force-push the bank curve every time the panel is built so the
-        // live BankShot table can never sit on all-zeros from a cold start
-        // (that was one way slider changes appeared to do nothing).
+        // live BankShot table can never sit uninitialized from a cold start
+        // (that was one way slider changes appeared to do nothing) —
+        // separate from the persisted per-angle values being 0° by design.
         AutoAimPrefs.pushBankCurve()
 
         return root

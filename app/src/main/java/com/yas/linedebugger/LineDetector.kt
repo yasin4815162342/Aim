@@ -185,24 +185,67 @@ object LineDetector {
             angle = weightedFitAngle(xs, ys, ws, meanX, meanY)
         }
 
-        // Two rounds of outlier trim + refit on the chosen component only
+        // --- Robust refinement on the chosen component ---
+        // The fit above is only a rough starting point. If a ball's edge is
+        // 4-connected to the real line — a partial-ball sliver too thin to
+        // survive Stage-1 erosion, or shaped so the WHOLE component's
+        // aspect/fill still reads "line-like" to Stage 2/selectBest — that
+        // contamination is already baked into this angle/mean, and no
+        // amount of "distance from THIS fit" trimming can fully undo a bias
+        // it was used to create. Bootstrap it out in stages instead:
+        var fit = FitState(totalW, meanX, meanY, angle)
+
+        // Stage A (x2): local width-consistency filter. A cue line has a
+        // near-constant cross-section width (that's what widthPx measures);
+        // a ball's edge locally balloons it because it's curving away from
+        // the line. Bin the mask along the rough direction and drop any bin
+        // whose perpendicular spread blows past the median bin's — this
+        // catches contamination by its LOCAL shape, which is exactly what
+        // the global aspect/fill checks upstream can't see.
         repeat(2) {
-            val (tx, ty, tw) = trimOutliersWeighted(xs, ys, ws, angle, meanX, meanY)
+            val (fx, fy, fw) = filterByLocalWidth(xs, ys, ws, fit.angle, fit.meanX, fit.meanY)
+            if (fx.size >= Tunables.minLinePixels) {
+                xs.clear(); ys.clear(); ws.clear()
+                xs.addAll(fx); ys.addAll(fy); ws.addAll(fw)
+                fit = computeFit(xs, ys, ws)
+            }
+        }
+
+        // Stage B: weighted RANSAC. Catches whatever slipped past the width
+        // filter (e.g. a short arc briefly near-tangent to the true line).
+        // Unlike a single least-squares fit, RANSAC never uses a
+        // contamination-biased fit as its own outlier yardstick — each
+        // candidate line is scored by direct pixel agreement, so it stays
+        // correct even with a large minority of junk pixels in the set.
+        val inlierThreshold = (residualStd(xs, ys, ws, fit.angle, fit.meanX, fit.meanY) * 1.8)
+            .coerceIn(1.2, 6.0).toFloat()
+        val inlierIdx = ransacLineFit(xs, ys, ws, inlierDistPx = inlierThreshold)
+        if (inlierIdx.size >= Tunables.minLinePixels) {
+            val rx = ArrayList<Int>(inlierIdx.size)
+            val ry = ArrayList<Int>(inlierIdx.size)
+            val rw = ArrayList<Float>(inlierIdx.size)
+            for (idx in inlierIdx) { rx.add(xs[idx]); ry.add(ys[idx]); rw.add(ws[idx]) }
+            xs.clear(); ys.clear(); ws.clear()
+            xs.addAll(rx); ys.addAll(ry); ws.addAll(rw)
+            fit = computeFit(xs, ys, ws)
+        }
+
+        // Stage C: one final light std-dev trim — now that gross
+        // contamination is gone, this only shaves anti-aliasing /
+        // quantization noise, which is what it was originally designed for.
+        run {
+            val (tx, ty, tw) = trimOutliersWeighted(xs, ys, ws, fit.angle, fit.meanX, fit.meanY)
             if (tx.size >= Tunables.minLinePixels) {
                 xs.clear(); ys.clear(); ws.clear()
                 xs.addAll(tx); ys.addAll(ty); ws.addAll(tw)
-                totalW = 0f
-                for (w in ws) totalW += w
-                meanX = 0.0; meanY = 0.0
-                for (i in xs.indices) {
-                    meanX += xs[i] * ws[i]
-                    meanY += ys[i] * ws[i]
-                }
-                meanX /= totalW
-                meanY /= totalW
-                angle = weightedFitAngle(xs, ys, ws, meanX, meanY)
+                fit = computeFit(xs, ys, ws)
             }
         }
+
+        totalW = fit.totalW
+        meanX = fit.meanX
+        meanY = fit.meanY
+        angle = fit.angle
 
         val dirX = cos(angle)
         val dirY = sin(angle)
@@ -533,6 +576,161 @@ object LineDetector {
             }
         }
         return Triple(outXs, outYs, outWs)
+    }
+
+    // ------------------------------------------------------------------
+    // Robust refit helpers (local width filter + weighted RANSAC)
+    // ------------------------------------------------------------------
+
+    private data class FitState(
+        val totalW: Float,
+        val meanX: Double,
+        val meanY: Double,
+        val angle: Double
+    )
+
+    /** Recomputes totalW/meanX/meanY/angle from scratch after a filter pass. */
+    private fun computeFit(xs: List<Int>, ys: List<Int>, ws: List<Float>): FitState {
+        var totalW = 0f
+        for (w in ws) totalW += w
+        var meanX = 0.0; var meanY = 0.0
+        if (totalW > 0f) {
+            for (i in xs.indices) {
+                meanX += xs[i] * ws[i]
+                meanY += ys[i] * ws[i]
+            }
+            meanX /= totalW
+            meanY /= totalW
+        }
+        val angle = if (xs.size >= 2) weightedFitAngle(xs, ys, ws, meanX, meanY) else 0.0
+        return FitState(totalW, meanX, meanY, angle)
+    }
+
+    /** Weighted perpendicular-residual std relative to a given fit — used to size the RANSAC inlier band to the actual line thickness instead of a fixed guess. */
+    private fun residualStd(
+        xs: List<Int>, ys: List<Int>, ws: List<Float>,
+        angle: Double, mx: Double, my: Double
+    ): Double {
+        val dirX = cos(angle); val dirY = sin(angle)
+        var sw = 0.0; var swr2 = 0.0
+        for (i in xs.indices) {
+            val dx = xs[i] - mx; val dy = ys[i] - my
+            val r = -dx * dirY + dy * dirX
+            val w = ws[i].toDouble()
+            sw += w
+            swr2 += w * r * r
+        }
+        return if (sw > 1e-6) sqrt(swr2 / sw) else 1.0
+    }
+
+    /**
+     * Bins the point set along [angle] and drops any bin whose perpendicular
+     * (cross-line) spread exceeds [widthFactor] times the median bin width.
+     * Meant to run on a rough direction estimate — a ball's edge fused to
+     * the real line by 4-connectivity locally balloons the mask's
+     * cross-section (it's curving away from the line), which this catches
+     * by LOCAL shape even when the whole component's aspect/fill still
+     * look line-like to the upstream circularity checks.
+     */
+    private fun filterByLocalWidth(
+        xs: List<Int>, ys: List<Int>, ws: List<Float>,
+        angle: Double, mx: Double, my: Double,
+        binPx: Float = 6f, widthFactor: Float = 2.2f
+    ): Triple<ArrayList<Int>, ArrayList<Int>, ArrayList<Float>> {
+        val n = xs.size
+        if (n < 4) return Triple(ArrayList(xs), ArrayList(ys), ArrayList(ws))
+        val dirX = cos(angle); val dirY = sin(angle)
+        val along = FloatArray(n)
+        val perp = FloatArray(n)
+        var minA = Float.MAX_VALUE; var maxA = -Float.MAX_VALUE
+        for (i in xs.indices) {
+            val dx = xs[i] - mx; val dy = ys[i] - my
+            val a = (dx * dirX + dy * dirY).toFloat()
+            val p = (-dx * dirY + dy * dirX).toFloat()
+            along[i] = a; perp[i] = p
+            if (a < minA) minA = a
+            if (a > maxA) maxA = a
+        }
+        val numBins = (((maxA - minA) / binPx).toInt() + 1).coerceAtLeast(1)
+        val binMin = FloatArray(numBins) { Float.MAX_VALUE }
+        val binMax = FloatArray(numBins) { -Float.MAX_VALUE }
+        val binOf = IntArray(n)
+        for (i in 0 until n) {
+            val bin = (((along[i] - minA) / binPx).toInt()).coerceIn(0, numBins - 1)
+            binOf[i] = bin
+            if (perp[i] < binMin[bin]) binMin[bin] = perp[i]
+            if (perp[i] > binMax[bin]) binMax[bin] = perp[i]
+        }
+        val widths = ArrayList<Float>(numBins)
+        for (bin in 0 until numBins) {
+            if (binMax[bin] >= binMin[bin]) widths.add(binMax[bin] - binMin[bin])
+        }
+        if (widths.isEmpty()) return Triple(ArrayList(xs), ArrayList(ys), ArrayList(ws))
+        widths.sort()
+        val medianWidth = widths[widths.size / 2].coerceAtLeast(1f)
+        // Small additive slack (+1.5px) so a naturally clean, uniform-width
+        // line doesn't get bins shaved off by pixel-quantization jitter.
+        val maxAllowed = medianWidth * widthFactor + 1.5f
+
+        val outXs = ArrayList<Int>(n); val outYs = ArrayList<Int>(n); val outWs = ArrayList<Float>(n)
+        for (i in 0 until n) {
+            val bin = binOf[i]
+            val bw = binMax[bin] - binMin[bin]
+            if (bw <= maxAllowed) {
+                outXs.add(xs[i]); outYs.add(ys[i]); outWs.add(ws[i])
+            }
+        }
+        return Triple(outXs, outYs, outWs)
+    }
+
+    /**
+     * Weighted RANSAC line fit. Returns the indices (into [xs]/[ys]) of the
+     * inlier set for the best-scoring line. Robust to a large minority of
+     * outlier pixels because it never uses a contamination-biased least-
+     * squares fit as its own reference — each candidate line is scored by
+     * direct pixel agreement instead. Fixed seed => deterministic, no
+     * frame-to-frame jitter from RNG alone.
+     */
+    private fun ransacLineFit(
+        xs: List<Int>, ys: List<Int>, ws: List<Float>,
+        iterations: Int = 50,
+        inlierDistPx: Float = 1.6f
+    ): IntArray {
+        val n = xs.size
+        if (n < 2) return IntArray(0)
+        val rnd = java.util.Random(0x5EEDL)
+        var bestCount = -1
+        var bestA = 0f; var bestB = 1f; var bestC = 0f
+        repeat(iterations) {
+            val i1 = rnd.nextInt(n)
+            var i2 = rnd.nextInt(n)
+            var guard = 0
+            while (i2 == i1 && guard < 5) { i2 = rnd.nextInt(n); guard++ }
+            if (i2 == i1) return@repeat
+            val x1 = xs[i1].toFloat(); val y1 = ys[i1].toFloat()
+            val x2 = xs[i2].toFloat(); val y2 = ys[i2].toFloat()
+            val dx = x2 - x1; val dy = y2 - y1
+            val len = sqrt(dx * dx + dy * dy)
+            if (len < 3f) return@repeat // too close together => unstable sample
+            val a = -dy / len
+            val b = dx / len
+            val c = a * x1 + b * y1
+            var count = 0
+            for (i in 0 until n) {
+                val d = abs(a * xs[i] + b * ys[i] - c)
+                if (d <= inlierDistPx) count++
+            }
+            if (count > bestCount) {
+                bestCount = count; bestA = a; bestB = b; bestC = c
+            }
+        }
+        if (bestCount < 0) return IntArray(0)
+        val inliers = ArrayList<Int>(bestCount)
+        for (i in 0 until n) {
+            val d = abs(bestA * xs[i] + bestB * ys[i] - bestC)
+            if (d <= inlierDistPx) inliers.add(i)
+        }
+        return inliers.toIntArray()
     }
 
     // ------------------------------------------------------------------
