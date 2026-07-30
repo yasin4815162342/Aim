@@ -56,6 +56,14 @@ class CaptureService : Service() {
     private var rowBytes: ByteArray = ByteArray(0)
     private var cropPixels: IntArray = IntArray(0)
 
+    // The crop's ACTUAL top-left origin on the capture buffer, in capture-
+    // space pixels, as extractCrop really computed it (rounded + clamped).
+    // Set by extractCrop() each frame; read right after to build an
+    // absolute full-screen anchor position — see the comment at the call
+    // site below for why this replaces the old reconstruction.
+    private var lastCropStartXCap = 0
+    private var lastCropStartYCap = 0
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             // Capture died. Keep overlays alive. Only release projection resources.
@@ -184,11 +192,36 @@ class CaptureService : Service() {
                     // scale-invariant; offsets/width are scaled back to
                     // full-screen pixels for the overlay.
                     val result = LineDetector.detect(pixels, diamCap)
-                    val scaled = if (result.hasLine && captureScale > 0f && captureScale != 1f) {
+                    // result.offsetX/Y come back as a pixel-center position
+                    // LOCAL to the crop (capture-space, 0..diamCap). The
+                    // crop's origin on the capture buffer is
+                    // lastCropStartXCap/Y — the exact rounded-and-clamped
+                    // value extractCrop() actually used to slice the
+                    // buffer a few lines up. Add them here and divide once
+                    // by captureScale to get one, correct, ABSOLUTE
+                    // full-screen anchor coordinate.
+                    //
+                    // This used to be done in two independent halves: this
+                    // scaling here, plus OverlayController separately
+                    // reconstructing the crop's screen-space origin as
+                    // `circleCenter - circleDiameter/2f`. That's a
+                    // DIFFERENT rounding path than the one above (round()
+                    // then an integer halving of diamCap vs a plain float
+                    // half of the on-screen diameter), so the two never
+                    // quite agreed — by at most a capture pixel, but that's
+                    // up to 1/captureScale *screen* pixels, and it drifts
+                    // by a different amount depending on where the circle
+                    // sits on screen. That's the "varies from spot to spot"
+                    // 1-3px offset. Building the absolute position from the
+                    // one true origin, in one place, removes the second
+                    // reconstruction instead of trying to tune it to match.
+                    val scaled = if (result.hasLine) {
+                        val absXCap = lastCropStartXCap + result.offsetX
+                        val absYCap = lastCropStartYCap + result.offsetY
                         result.copy(
                             widthPx = result.widthPx / captureScale,
-                            offsetX = result.offsetX / captureScale,
-                            offsetY = result.offsetY / captureScale
+                            offsetX = absXCap / captureScale,
+                            offsetY = absYCap / captureScale
                         )
                     } else {
                         result
@@ -239,6 +272,8 @@ class CaptureService : Service() {
         val maxStartY = (imgH - diamCap).coerceAtLeast(0)
         val startX = (cxCap - halfCap).coerceIn(0, maxStartX)
         val startY = (cyCap - halfCap).coerceIn(0, maxStartY)
+        lastCropStartXCap = startX
+        lastCropStartYCap = startY
 
         val need = diamCap * diamCap
         if (cropPixels.size < need) cropPixels = IntArray(need)

@@ -3,11 +3,13 @@ package com.yas.linedebugger
 import android.app.Service
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PixelFormat
-import android.graphics.RectF
+import android.graphics.Shader
 import android.os.Build
 import android.util.DisplayMetrics
 import android.view.Gravity
@@ -1137,6 +1139,15 @@ class DrawOverlayView(context: Context) : View(context) {
         color = Color.WHITE
         isAntiAlias = true
     }
+    // Ray Monitor preview: drawn as a circle (same on-screen diameter as
+    // the Ray Circle controller) instead of the old square, via a
+    // BitmapShader clipped by drawCircle — clipPath() doesn't anti-alias
+    // its edge, a shader-filled circle does.
+    private val monitorCirclePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        isFilterBitmap = true
+    }
+    private val monitorMatrix = Matrix()
     private val textPaint = Paint().apply {
         color = Color.GREEN
         textSize = 32f
@@ -1254,17 +1265,31 @@ class DrawOverlayView(context: Context) : View(context) {
 
         if (Tunables.rayMonitorEnabled) {
             if (result != null && result.previewArgb.isNotEmpty()) {
-                // Preview may be at capture-scale resolution (half native);
-                // derive side length from the array, display scaled up to
-                // roughly 3× the on-screen circle diameter for readability.
+                // Preview is captured at capture-scale resolution (can be
+                // smaller than the on-screen Ray Circle). Displayed here at
+                // the SAME on-screen diameter as the Ray Circle controller
+                // (Tunables.circleDiameter) and clipped to a circle to
+                // match it — was a square scaled 3x for readability before.
                 val n = result.previewArgb.size
                 val side = kotlin.math.sqrt(n.toDouble()).toInt()
                 if (side * side == n && side > 0) {
                     val bmp = Bitmap.createBitmap(result.previewArgb, side, side, Bitmap.Config.ARGB_8888)
-                    val disp = (Tunables.circleDiameter * 3f).coerceAtLeast(120f)
-                    val r = RectF(20f, 84f, 20f + disp, 84f + disp)
-                    canvas.drawRect(r, bgPaint)
-                    canvas.drawBitmap(bmp, null, r, null)
+                    val disp = Tunables.circleDiameter.toFloat().coerceAtLeast(1f)
+                    val radius = disp / 2f
+                    val previewCx = 20f + radius
+                    val previewCy = 84f + radius
+
+                    canvas.drawCircle(previewCx, previewCy, radius, bgPaint)
+
+                    val scale = disp / side.toFloat()
+                    monitorMatrix.reset()
+                    monitorMatrix.setScale(scale, scale)
+                    monitorMatrix.postTranslate(previewCx - radius, previewCy - radius)
+                    monitorCirclePaint.shader = BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+                        setLocalMatrix(monitorMatrix)
+                    }
+                    canvas.drawCircle(previewCx, previewCy, radius, monitorCirclePaint)
+                    monitorCirclePaint.shader = null
                 }
             }
             canvas.drawRect(16f, 16f, 720f, 76f, bgPaint)
@@ -1302,8 +1327,15 @@ class DrawOverlayView(context: Context) : View(context) {
         markerRing.alpha = (255 * alphaScale).toInt()
         markerDot.alpha = (255 * alphaScale).toInt()
 
-        val ax = cx - half + result.offsetX
-        val ay = cy - half + result.offsetY
+        // offsetX/offsetY are now an ABSOLUTE full-screen coordinate — the
+        // crop's true pixel-center anchor, computed once in CaptureService
+        // from the exact rounding it used to grab the buffer (see the
+        // comment there). Do NOT reconstruct it again from
+        // circleCenter/circleDiameter here; that second, independently-
+        // rounded path was the actual source of the spot-to-spot 1-3px
+        // drift — the fix is to only ever compute it once.
+        val ax = result.offsetX
+        val ay = result.offsetY
         val dirX = cos(result.angleRad).toFloat()
         val dirY = sin(result.angleRad).toFloat()
 

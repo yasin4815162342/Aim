@@ -74,7 +74,51 @@ object LineDetector {
 
         val mode = Tunables.detectionMode
 
+        // The Ray Zone the user drags onto the guideline is a CIRCLE
+        // (Tunables.circleDiameter), but extractCrop() has no way to grab a
+        // circular region from the frame buffer — it hands us the square
+        // that bounds it. Without this mask, pixels in the square's four
+        // corners (outside the visible circle, up to ~21% of the square's
+        // area) are still fair game to the color/HSV checks below, so a
+        // guideline running close to the edge of the Ray Zone can pull the
+        // weighted centroid past the circle's radius — sometimes past it,
+        // sometimes not, a one-pixel anti-aliasing difference either way
+        // between frames. That flicker is what was driving the "throbbing
+        // on the edges": OverlayController's Ray Zone clip
+        // (clipOutsideRayZone) branches on whether the anchor point is
+        // inside or outside that same circle, so a centroid ping-ponging
+        // across the boundary flips which branch runs, which flips the
+        // rendered line's start point between two very different points on
+        // the ray every other frame.
+        //
+        // Masking candidates to the inscribed circle fixes this by
+        // construction, not just in practice: a weighted average of points
+        // confined to a disk can never leave that disk (the disk is
+        // convex), so the centroid is now geometrically guaranteed to stay
+        // inside radius `size/2` — comfortably inside the 20%-larger
+        // zoneR used for clipping, with margin to spare. The flip can't
+        // happen anymore, regardless of how noisy any single frame's pixel
+        // classification is right at the boundary.
+        // True center of the square, in the same pixel-corner index space
+        // as col/row below (so it lines up with the crop the way
+        // extractCrop actually built it, not shifted by half a pixel).
+        val zoneCenter = size * 0.5
+        val zoneRadius = size * 0.5
+        val zoneRadiusSq = zoneRadius * zoneRadius
+
         for (i in 0 until n) {
+            val row = i / size
+            val col = i - row * size
+            // Test the pixel's CENTER, not its corner index — same +0.5
+            // convention the centroid uses below, so the mask boundary
+            // itself is pixel-accurate rather than off by half a pixel.
+            val ddx = (col + 0.5) - zoneCenter
+            val ddy = (row + 0.5) - zoneCenter
+            if (ddx * ddx + ddy * ddy > zoneRadiusSq) {
+                brightness[i] = 0
+                continue // outside the visible Ray Zone circle — never a candidate
+            }
+
             val p = pixels[i]
             val r = (p shr 16) and 0xFF
             val g = (p shr 8) and 0xFF
@@ -136,7 +180,12 @@ object LineDetector {
         // Preview
         val preview = IntArray(n)
         for (i in 0 until n) {
+            val row = i / size
+            val col = i - row * size
+            val ddx = (col + 0.5) - zoneCenter
+            val ddy = (row + 0.5) - zoneCenter
             preview[i] = when {
+                ddx * ddx + ddy * ddy > zoneRadiusSq -> 0xFF000000.toInt() // outside Ray Zone circle
                 lineMask[i] -> 0xFFFF00FF.toInt()
                 ballGrown[i] -> 0xFF3060FF.toInt()
                 isCandidate[i] -> 0xFFFFFF00.toInt()
