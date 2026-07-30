@@ -85,6 +85,11 @@ object Tunables {
     // balls bounce identically, per the bug report's "shared resource"
     // note.
     @Volatile var ghostBallDiameterPx: Float = AutoAimPrefs.DEFAULT_GHOST_BALL_DIAMETER_PX
+    // Chipmunk / game-physics mode: pure optical reflection matching the
+    // original pool game's rail e=1.0. When true, BankShot.reflect ignores
+    // the entire correction curve and rebound-intensity slider and delegates
+    // to BankShotChipmunk. See BankShotChipmunk.kt.
+    @Volatile var chipmunkMode: Boolean = AutoAimPrefs.DEFAULT_CHIPMUNK_MODE
 
     // --- Table calibration (ported from the Manual app; -1 = uncalibrated) ---
     @Volatile var tableLeft: Float = -1f

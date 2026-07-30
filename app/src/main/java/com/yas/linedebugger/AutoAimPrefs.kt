@@ -66,6 +66,7 @@ object AutoAimPrefs {
     private const val KEY_DOUBLE_LINE_WIDTH_PX = "double_line_width_px"
     private const val KEY_BANK_MARKER_ENABLED = "bank_marker_enabled"
     private const val KEY_GHOST_BALL_DIAMETER_PX = "ghost_ball_diameter_px"
+    private const val KEY_CHIPMUNK_MODE = "chipmunk_mode"
 
     private const val KEY_BANK_CORRECTION_PREFIX = "bank_correction_"
     private const val KEY_REBOUND_INTENSITY = "rebound_intensity"
@@ -201,6 +202,10 @@ object AutoAimPrefs {
     const val DEFAULT_DOUBLE_LINE_WIDTH_PX = 60f
 
     const val DEFAULT_BANK_MARKER_ENABLED = true
+
+    // Chipmunk / game-physics mode (pure rail e=1.0 reflection). Off by
+    // default so existing correction-curve users are unaffected.
+    const val DEFAULT_CHIPMUNK_MODE = false
 
     // Bug #3: shared ghost-ball diameter — same range/default as the
     // Manual app's ball-size slider, since it's the same physical ball.
@@ -366,6 +371,9 @@ object AutoAimPrefs {
     fun getGhostBallDiameterPx() = prefs.getFloat(KEY_GHOST_BALL_DIAMETER_PX, DEFAULT_GHOST_BALL_DIAMETER_PX)
     fun setGhostBallDiameterPx(v: Float) { prefs.edit().putFloat(KEY_GHOST_BALL_DIAMETER_PX, v).apply() }
 
+    fun isChipmunkMode() = prefs.getBoolean(KEY_CHIPMUNK_MODE, DEFAULT_CHIPMUNK_MODE)
+    fun setChipmunkMode(v: Boolean) { prefs.edit().putBoolean(KEY_CHIPMUNK_MODE, v).apply() }
+
     fun getBankCorrection(index: Int) = prefs.getFloat(KEY_BANK_CORRECTION_PREFIX + index, DEFAULT_BANK_CORRECTIONS[index])
     fun setBankCorrection(index: Int, v: Float) { prefs.edit().putFloat(KEY_BANK_CORRECTION_PREFIX + index, v).apply() }
 
@@ -525,6 +533,7 @@ object AutoAimPrefs {
         Tunables.doubleLineWidthPx = getDoubleLineWidthPx()
         Tunables.bankMarkerEnabled = isBankMarkerEnabled()
         Tunables.ghostBallDiameterPx = getGhostBallDiameterPx()
+        Tunables.chipmunkMode = isChipmunkMode()
 
         Tunables.tableLeft = getTableLeft()
         Tunables.tableTop = getTableTop()

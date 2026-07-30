@@ -82,8 +82,16 @@ object BankShot {
      * Returns the reflected outgoing unit direction as [dx, dy], or null if
      * the incoming direction was degenerate (shouldn't happen in practice —
      * callers should just stop drawing that direction in that case).
+     *
+     * When Tunables.chipmunkMode is true, every correction curve value and
+     * the rebound-intensity slider are ignored — reflection is pure
+     * Chipmunk game physics (rail e=1.0). See BankShotChipmunk.
      */
     fun reflect(dx: Float, dy: Float, hitVertical: Boolean): FloatArray? {
+        if (Tunables.chipmunkMode) {
+            return BankShotChipmunk.reflect(dx, dy, hitVertical)
+        }
+
         val impactAngle = impactAngleDeg(dx, dy, hitVertical)
 
         val normalComp = if (hitVertical) dx else dy

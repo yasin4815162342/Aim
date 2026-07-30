@@ -318,6 +318,10 @@ object SettingsPanelBuilder {
 
         // ==================== Bank Shot ====================
         sectionLabel("Bank Shot")
+        checkbox("Chipmunk mode (game physics)", Tunables.chipmunkMode) {
+            Tunables.chipmunkMode = it; AutoAimPrefs.setChipmunkMode(it)
+        }
+        hint("When on, every bank uses pure Chipmunk reflection from the original pool game (rail elasticity = 1.0). The entire correction curve and rebound-intensity slider below are ignored. Turn off to restore your tuned curve.")
         intSlider("Max lines (total segments)", AutoAimPrefs.MAX_LINES_MIN, AutoAimPrefs.MAX_LINES_MAX, Tunables.maxLines) {
             Tunables.maxLines = it; AutoAimPrefs.setMaxLines(it)
         }

@@ -175,7 +175,7 @@ object ManualControlPanelBuilder {
         hint("Bug #3 fix applies here too: the ghost ball sits flush against the calibrated rail with its center — not its edge — as the bounce/reflection point.")
 
         sectionLabel("Kiss Shot")
-        hint("Adds two more draggable points: KISS (magenta ball — place on the ball TARGET will kiss off of) and DEST (red dot — place on the pocket). A green dot shows where on KISS's edge contact needs to happen for TARGET to deflect into DEST. Solved against the game's real ball collision physics (0.95 elasticity), using the CUE->TARGET line as TARGET's approach direction.")
+        hint("No new ball handle — reuses CUE and TARGET. While this is on: TARGET = the ball you're kissing off of (not a rail-bank point), CUE = where the moving ball starts from. Only new point is DEST (red dot) — place it on the pocket. A tiny green dot marks exactly where on TARGET's edge contact needs to happen. Bank-shot detection is skipped while this is on, since TARGET means something different now. Solved against the game's real ball collision physics (0.95 elasticity), using the CUE→TARGET line as the approach direction. If a shot is geometrically impossible from that approach, nothing gets drawn — no false positives.")
         checkbox("Enable Kiss Shot assist", Tunables.manualKissEnabled) {
             OverlayController.setManualKissEnabled(it)
         }

@@ -6,34 +6,36 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.hypot
 
-// Rewritten from the game's real chipmunk.js collision solver
-// (physicsData/PoolPhysics.js): ball-ball fixtures use
-// ball_elasticity: 0.95, ball_friction: 0.1 (both identical on every
-// ball, so they apply directly with no combine-rule ambiguity).
+// Ball-to-ball kiss geometry, reusing the existing CUE/TARGET pair:
+// TARGET = the ball being kissed off of (purple), CUE = the moving
+// ball's approach point (blue's start / aim anchor) -- same "not
+// necessarily the real cue ball" idea the app already uses for bank
+// shots. DEST is the only dedicated new point (pocket target).
 //
-// Chipmunk resolves a circle-circle hit as a standard sequential-impulse
-// collision: restitution e applied along the contact normal n, tangential
-// component preserved. For equal masses, target initially at rest, that
-// works out to a clean closed form for the incident ball's (Blue's)
-// outgoing velocity:
+// Collision physics extracted from the game's real chipmunk.js solver
+// (physicsData/PoolPhysics.js): ball_elasticity: 0.95, identical on
+// every ball. A circle-circle hit resolves as restitution e along the
+// contact normal n, tangential component preserved -- for equal masses,
+// target initially at rest, that's:
 //
 //   v1' = v1 - n * (v1 . n) * (1 + e) / 2
 //
-// At e = 1 this reduces to v1' = v1 - n*(v1.n)*n, which is ALWAYS exactly
-// perpendicular to n no matter what v1 is -- that's the old "ghost ball"
-// assumption, and it's what let the previous version solve contact from
-// Purple/Dest alone. At the real e = 0.95, v1' keeps a small residual
-// component along n (~2.5% of the closing speed), so the true outgoing
-// direction depends slightly on Blue's actual incoming direction too --
-// it's no longer 100% angle-of-approach-independent. We fold that in
-// below by seeding from the old e=1 closed form, then refining a few
-// steps against the real formula using the CUE->TARGET line as Blue's
-// approach direction, since that's the only estimate of it we have.
+// At e=1 this is always exactly perpendicular to n regardless of v1 --
+// that's the classic ghost-ball assumption, and it's what lets the base
+// solution come from TARGET/DEST alone. At the real e=0.95 there's a
+// small residual along n, so we seed from the e=1 closed form and
+// refine a few steps against the real formula using CUE->TARGET as
+// blue's approach direction (the only estimate of it available).
 //
-// NOT modeled: ball_friction's spin-transfer throw (needs simulated
-// spin/speed we don't track for a static ghost-ball overlay). That,
-// plus real-world/engine slop, is what the throw-correction tweak below
-// is for.
+// Not modeled: ball_friction's spin-transfer throw (needs simulated
+// spin/speed a static overlay doesn't have). That, plus engine/
+// calibration slop, is what the throw-correction tweak is for.
+//
+// Impossibility check: a ball can only be struck from the side it's
+// actually approaching from. Of the two geometrically valid contact
+// points (mirror images across the TARGET-DEST line), if NEITHER is on
+// the side CUE's direction actually reaches, the kiss is not physically
+// achievable -- solve() returns null rather than a wrong answer.
 object KissShot {
 
     const val SIDE_AUTO = 0
@@ -44,14 +46,13 @@ object KissShot {
     private const val REFINE_BRACKET_RAD = 0.5236f // 30 deg, generous vs. the ~1-16 deg real range
     private const val REFINE_STEPS = 24
 
-    // [ghostCenterX, ghostCenterY, contactX, contactY], or null if the
-    // destination is closer to purple's centre than one ball-diameter
-    // (geometrically impossible).
+    // [ghostCenterX, ghostCenterY, contactX, contactY], or null if
+    // impossible (destination unreachably close to purple's centre, or
+    // no valid contact point is on CUE's approach side).
     fun solve(
-        purpleX: Float, purpleY: Float,
-        destX: Float, destY: Float,
-        blueX: Float, blueY: Float,
-        cueX: Float, cueY: Float,
+        purpleX: Float, purpleY: Float,   // TARGET
+        destX: Float, destY: Float,       // DEST
+        cueX: Float, cueY: Float,         // CUE
         ballDiameterPx: Float,
         radiusScalePercent: Float,
         throwAngleDeg: Float,
@@ -66,28 +67,48 @@ object KissShot {
         val cosT = (2f * r / d).coerceIn(-1f, 1f)
         val theta = acos(cosT)
         val phi = atan2(wy, wx)
+        val alphaA = phi + theta
+        val alphaB = phi - theta
 
-        val sideRef = when (sideLock) {
-            SIDE_LEFT -> -1f
-            SIDE_RIGHT -> 1f
-            else -> wx * (blueY - purpleY) - wy * (blueX - purpleX)
+        val apx = purpleX - cueX
+        val apy = purpleY - cueY
+        val alen = hypot(apx, apy)
+        val haveApproach = alen > 1f
+        val v1x = if (haveApproach) apx / alen else 0f
+        val v1y = if (haveApproach) apy / alen else 0f
+
+        // n = (cos a, sin a) points from purple's centre toward the
+        // contact/ghost position. Reachable only if blue is actually
+        // heading into -n (i.e. approaching from that side).
+        fun reachable(a: Float) = !haveApproach || (v1x * cos(a) + v1y * sin(a)) < 0f
+
+        var alpha: Float
+        var usingA: Boolean
+        when (sideLock) {
+            SIDE_LEFT -> { alpha = alphaA; usingA = true }
+            SIDE_RIGHT -> { alpha = alphaB; usingA = false }
+            else -> {
+                val okA = reachable(alphaA)
+                val okB = reachable(alphaB)
+                when {
+                    okA && !okB -> { alpha = alphaA; usingA = true }
+                    okB && !okA -> { alpha = alphaB; usingA = false }
+                    !okA && !okB -> return null // impossible from this approach
+                    else -> {
+                        val sideRef = wx * (cueY - purpleY) - wy * (cueX - purpleX)
+                        val crossA = wx * sin(alphaA) - wy * cos(alphaA)
+                        if ((crossA >= 0f) == (sideRef >= 0f)) {
+                            alpha = alphaA; usingA = true
+                        } else {
+                            alpha = alphaB; usingA = false
+                        }
+                    }
+                }
+            }
         }
 
-        var alpha = phi + theta
-        val cross0 = wx * sin(alpha) - wy * cos(alpha)
-        val positive = sideRef >= 0f
-        if ((cross0 >= 0f) != positive) alpha = phi - theta
-
-        // Refine against the real e=0.95 formula using Blue's approach
-        // direction (CUE->TARGET). Skipped if that line is degenerate.
-        val ivx = blueX - cueX
-        val ivy = blueY - cueY
-        val ilen = hypot(ivx, ivy)
-        if (ilen > 1f) {
-            val v1x = ivx / ilen
-            val v1y = ivy / ilen
+        if (haveApproach) {
             val k = (1f + BALL_ELASTICITY) / 2f
-
             fun residual(a: Float): Float {
                 val nx = cos(a); val ny = sin(a)
                 val dot = v1x * nx + v1y * ny
@@ -95,11 +116,8 @@ object KissShot {
                 val outY = v1y - ny * dot * k
                 val gx = purpleX + nx * 2f * r
                 val gy = purpleY + ny * 2f * r
-                val tx = destX - gx
-                val ty = destY - gy
-                return outX * ty - outY * tx
+                return outX * (destY - gy) - outY * (destX - gx)
             }
-
             var lo = alpha - REFINE_BRACKET_RAD
             var hi = alpha + REFINE_BRACKET_RAD
             var fLo = residual(lo)
@@ -115,7 +133,7 @@ object KissShot {
         }
 
         val throwRad = Math.toRadians(throwAngleDeg.toDouble()).toFloat()
-        alpha += if (positive) throwRad else -throwRad
+        alpha += if (usingA) throwRad else -throwRad
 
         val nx = cos(alpha)
         val ny = sin(alpha)
