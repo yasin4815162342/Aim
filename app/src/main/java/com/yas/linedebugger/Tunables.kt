@@ -136,4 +136,9 @@ object Tunables {
     // flip unpredictably when Blue sits near the purple-to-pocket line —
     // this locks it to one side. 0=auto, 1=left, 2=right (KissShot.SIDE_*).
     @Volatile var manualKissSideLock: Int = AutoAimPrefs.DEFAULT_MANUAL_KISS_SIDE_LOCK
+    // Tweak 4/5: look of the two green kiss guide lines (CUE→ghost and
+    // ghost→DEST) — independent of the CUE/TARGET manual line's own
+    // width/opacity above.
+    @Volatile var manualKissLineWidthPx: Float = AutoAimPrefs.DEFAULT_MANUAL_KISS_LINE_WIDTH_PX
+    @Volatile var manualKissLineOpacity: Int = AutoAimPrefs.DEFAULT_MANUAL_KISS_LINE_OPACITY
 }

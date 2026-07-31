@@ -110,6 +110,8 @@ object AutoAimPrefs {
     private const val KEY_MANUAL_KISS_RADIUS_SCALE_PERCENT = "manual_kiss_radius_scale_percent"
     private const val KEY_MANUAL_KISS_THROW_ANGLE_DEG = "manual_kiss_throw_angle_deg"
     private const val KEY_MANUAL_KISS_SIDE_LOCK = "manual_kiss_side_lock"
+    private const val KEY_MANUAL_KISS_LINE_WIDTH_PX = "manual_kiss_line_width_px"
+    private const val KEY_MANUAL_KISS_LINE_OPACITY = "manual_kiss_line_opacity"
 
     // ---------------- Defaults & ranges ----------------
 
@@ -318,6 +320,18 @@ object AutoAimPrefs {
     // Tweak 3 — which of the two mirror solutions to use.
     const val DEFAULT_MANUAL_KISS_SIDE_LOCK = KissShot.SIDE_AUTO
 
+    // Tweak 4/5 — look of the two green kiss guide lines (CUE→ghost and
+    // ghost→DEST). Separate from the CUE/TARGET manual line's own width/
+    // opacity above, since the kiss lines are their own visual element and
+    // people may want them thinner/fainter (or bolder) independently.
+    const val MANUAL_KISS_LINE_WIDTH_MIN_PX = 1.0f
+    const val MANUAL_KISS_LINE_WIDTH_MAX_PX = 6.0f
+    const val DEFAULT_MANUAL_KISS_LINE_WIDTH_PX = 2.0f
+
+    const val MANUAL_KISS_LINE_OPACITY_MIN = 60
+    const val MANUAL_KISS_LINE_OPACITY_MAX = 255
+    const val DEFAULT_MANUAL_KISS_LINE_OPACITY = 200
+
     // ---------------- Getters / setters ----------------
 
     fun getGreenDiff() = prefs.getInt(KEY_GREEN_DIFF, DEFAULT_GREEN_DIFF)
@@ -495,6 +509,12 @@ object AutoAimPrefs {
     fun getManualKissSideLock() = prefs.getInt(KEY_MANUAL_KISS_SIDE_LOCK, DEFAULT_MANUAL_KISS_SIDE_LOCK)
     fun setManualKissSideLock(v: Int) { prefs.edit().putInt(KEY_MANUAL_KISS_SIDE_LOCK, v).apply() }
 
+    fun getManualKissLineWidthPx() = prefs.getFloat(KEY_MANUAL_KISS_LINE_WIDTH_PX, DEFAULT_MANUAL_KISS_LINE_WIDTH_PX)
+    fun setManualKissLineWidthPx(v: Float) { prefs.edit().putFloat(KEY_MANUAL_KISS_LINE_WIDTH_PX, v).apply() }
+
+    fun getManualKissLineOpacity() = prefs.getInt(KEY_MANUAL_KISS_LINE_OPACITY, DEFAULT_MANUAL_KISS_LINE_OPACITY)
+    fun setManualKissLineOpacity(v: Int) { prefs.edit().putInt(KEY_MANUAL_KISS_LINE_OPACITY, v).apply() }
+
     /**
      * Copies every persisted value into the live [Tunables] cache and
      * refreshes the [BankShot] correction curve. Safe to call more than
@@ -562,6 +582,8 @@ object AutoAimPrefs {
         Tunables.manualKissRadiusScalePercent = getManualKissRadiusScalePercent()
         Tunables.manualKissThrowAngleDeg = getManualKissThrowAngleDeg()
         Tunables.manualKissSideLock = getManualKissSideLock()
+        Tunables.manualKissLineWidthPx = getManualKissLineWidthPx()
+        Tunables.manualKissLineOpacity = getManualKissLineOpacity()
 
         pushBankCurve()
     }

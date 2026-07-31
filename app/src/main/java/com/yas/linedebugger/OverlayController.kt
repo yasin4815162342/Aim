@@ -1435,7 +1435,10 @@ class DrawOverlayView(context: Context) : View(context) {
         style = Paint.Style.FILL; color = Color.GREEN
     }
     private val kissGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; color = Color.GREEN; strokeWidth = 2f; alpha = 200
+        style = Paint.Style.STROKE
+        color = Color.GREEN
+        strokeWidth = AutoAimPrefs.DEFAULT_MANUAL_KISS_LINE_WIDTH_PX
+        alpha = AutoAimPrefs.DEFAULT_MANUAL_KISS_LINE_OPACITY
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -1888,12 +1891,18 @@ class DrawOverlayView(context: Context) : View(context) {
             if (solved != null) {
                 val ghostX = solved[0]; val ghostY = solved[1]
                 val contactX = solved[2]; val contactY = solved[3]
-                // Approach guide: CUE's own ghost-ball centre straight to
-                // the contact point on TARGET's edge — this is the line
-                // the old (now-removed) dedicated kiss-shot controller used
-                // to draw. Departure guide: contact point onward to DEST,
-                // showing TARGET's expected path after the kiss.
-                canvas.drawLine(cueX, cueY, contactX, contactY, kissGuidePaint)
+                kissGuidePaint.strokeWidth = Tunables.manualKissLineWidthPx
+                kissGuidePaint.alpha = Tunables.manualKissLineOpacity
+                // Approach guide: actual CUE position straight to the
+                // GHOST BALL centre — where CUE's own centre needs to be
+                // at the moment of contact — not the contact point itself
+                // (that's only the surface touch, one radius short of the
+                // ghost ball's middle). Departure guide: ghost ball centre
+                // onward to DEST, showing TARGET's expected path after the
+                // kiss. Both lines share the ghost-ball point as their
+                // join, so together they read as one continuous path from
+                // CUE through the moment of contact to DEST.
+                canvas.drawLine(cueX, cueY, ghostX, ghostY, kissGuidePaint)
                 canvas.drawLine(ghostX, ghostY, destX, destY, kissGuidePaint)
                 canvas.drawCircle(contactX, contactY, 3f, kissContactDot)
             }

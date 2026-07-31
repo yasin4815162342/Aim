@@ -203,6 +203,16 @@ object ManualControlPanelBuilder {
         }
 
         floatSlider(
+            "Kiss line width", AutoAimPrefs.MANUAL_KISS_LINE_WIDTH_MIN_PX, AutoAimPrefs.MANUAL_KISS_LINE_WIDTH_MAX_PX,
+            Tunables.manualKissLineWidthPx, 50, { "%.1f px".format(it) }
+        ) { Tunables.manualKissLineWidthPx = it; AutoAimPrefs.setManualKissLineWidthPx(it) }
+
+        intSlider(
+            "Kiss line opacity", AutoAimPrefs.MANUAL_KISS_LINE_OPACITY_MIN, AutoAimPrefs.MANUAL_KISS_LINE_OPACITY_MAX,
+            Tunables.manualKissLineOpacity
+        ) { Tunables.manualKissLineOpacity = it; AutoAimPrefs.setManualKissLineOpacity(it) }
+
+        floatSlider(
             "Kiss ball-size calibration",
             AutoAimPrefs.MANUAL_KISS_RADIUS_SCALE_MIN_PERCENT, AutoAimPrefs.MANUAL_KISS_RADIUS_SCALE_MAX_PERCENT,
             Tunables.manualKissRadiusScalePercent, 40, { "%.0f%%".format(it) }
