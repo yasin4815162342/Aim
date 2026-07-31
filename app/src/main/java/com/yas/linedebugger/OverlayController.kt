@@ -614,12 +614,14 @@ object OverlayController {
         manualTargetY = screenHeight * 0.45f
 
         manualCueHandle = ManualHandle(
-            svc, wm, screenWidth, screenHeight, ManualRole.CUE, manualCueX, manualCueY
-        ) { x, y -> manualCueX = x; manualCueY = y; drawView?.invalidate() }
+            svc, wm, screenWidth, screenHeight, ManualRole.CUE, manualCueX, manualCueY,
+            onMoved = { x, y -> manualCueX = x; manualCueY = y; drawView?.invalidate() }
+        )
 
         manualTargetHandle = ManualHandle(
-            svc, wm, screenWidth, screenHeight, ManualRole.TARGET, manualTargetX, manualTargetY
-        ) { x, y -> manualTargetX = x; manualTargetY = y; drawView?.invalidate() }
+            svc, wm, screenWidth, screenHeight, ManualRole.TARGET, manualTargetX, manualTargetY,
+            onMoved = { x, y -> manualTargetX = x; manualTargetY = y; drawView?.invalidate() }
+        )
 
         if (Tunables.manualKissEnabled) attachManualDestHandle()
 
