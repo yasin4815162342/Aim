@@ -8,6 +8,7 @@ import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 
 /**
  * Builds the Manual CUE/TARGET controller section — feature request #1.
@@ -73,7 +74,7 @@ object ManualControlPanelBuilder {
         fun floatSlider(
             label: String, min: Float, max: Float, initial: Float, steps: Int,
             format: (Float) -> String, onSet: (Float) -> Unit
-        ) {
+        ): Pair<TextView, SeekBar> {
             val tv = TextView(context).apply { text = "$label: ${format(initial)}"; setTextColor(Color.WHITE) }
             root.addView(tv)
             val sb = SeekBar(context).apply {
@@ -90,6 +91,7 @@ object ManualControlPanelBuilder {
                 override fun onStopTrackingTouch(seek: SeekBar?) {}
             })
             root.addView(sb)
+            return tv to sb
         }
 
         fun checkbox(label: String, initial: Boolean, onSet: (Boolean) -> Unit) {
@@ -114,7 +116,7 @@ object ManualControlPanelBuilder {
             Tunables.manualSensitivity, 140, { "%.2fx".format(it) }
         ) { Tunables.manualSensitivity = it; AutoAimPrefs.setManualSensitivity(it) }
 
-        floatSlider(
+        val (ballSizeLabel, ballSizeSeek) = floatSlider(
             "Ball size (shared with Bank Shot section in the floating panel)",
             AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX, AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX,
             Tunables.ghostBallDiameterPx, 100, { "%.0f px".format(it) }
@@ -124,6 +126,26 @@ object ManualControlPanelBuilder {
             OverlayController.onGhostBallDiameterChanged(it)
         }
         hint("Same ball diameter the automatic ray's rail bounce uses (bug #3) — kept as one shared value since it's the same physical ball either way.")
+        hint("Bug #2 fix: auto-set from the reference game's real ball/table proportions whenever you calibrate the table (Calibrate Table button is in the floating panel). Button below reapplies that without recalibrating.")
+        root.addView(Button(context).apply {
+            text = "Match ball size to table calibration"
+            setOnClickListener {
+                val applied = OverlayController.matchBallSizeToCalibration()
+                if (applied) {
+                    val v = Tunables.ghostBallDiameterPx
+                    ballSizeLabel.text = "Ball size (shared with Bank Shot section in the floating panel): %.0f px".format(v)
+                    val steps = ballSizeSeek.max
+                    ballSizeSeek.progress = Math.round(
+                        (v - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) /
+                            (AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) * steps
+                    ).coerceIn(0, steps)
+                    Toast.makeText(context, "Ball size set to %.0f px from table calibration".format(v), Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Calibrate the table first (floating panel, while running)", Toast.LENGTH_SHORT).show()
+                }
+                onChanged()
+            }
+        })
 
         sectionLabel("Manual Line Look")
         floatSlider(
@@ -175,7 +197,7 @@ object ManualControlPanelBuilder {
         hint("Bug #3 fix applies here too: the ghost ball sits flush against the calibrated rail with its center — not its edge — as the bounce/reflection point.")
 
         sectionLabel("Kiss Shot")
-        hint("No new ball handle — reuses CUE and TARGET. While this is on: TARGET = the ball you're kissing off of (not a rail-bank point), CUE = where the moving ball starts from. Only new point is DEST (red dot) — place it on the pocket. A tiny green dot marks exactly where on TARGET's edge contact needs to happen. Bank-shot detection is skipped while this is on, since TARGET means something different now. Solved against the game's real ball collision physics (0.95 elasticity), using the CUE→TARGET line as the approach direction. If a shot is geometrically impossible from that approach, nothing gets drawn — no false positives.")
+        hint("No new ball handle — reuses CUE and TARGET. Tap the checkbox to bring up DEST (place it on the pocket); after that, tap DEST itself (don't drag it) to flip kiss mode on/off without losing its position — green means the kiss trajectory is showing, red means it's parked and CUE/TARGET fall back to a normal bank shot. While active: TARGET = the ball you're kissing off of (not a rail-bank point), CUE = where the moving ball starts from. A tiny green dot marks exactly where on TARGET's edge contact needs to happen, with guide lines from both CUE and DEST to it. Solved against the game's real ball collision physics (0.95 elasticity), using the CUE→TARGET line as the approach direction. If a shot is geometrically impossible from that approach, nothing gets drawn — no false positives.")
         checkbox("Enable Kiss Shot assist", Tunables.manualKissEnabled) {
             OverlayController.setManualKissEnabled(it)
         }

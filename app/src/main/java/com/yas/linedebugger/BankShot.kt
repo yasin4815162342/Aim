@@ -93,6 +93,31 @@ object BankShot {
     }
 
     /**
+     * Pure mirror reflection — no correction curve applied. Bug fix (Double
+     * Bank Shots): the correction curve above is derived from replaying
+     * Chipmunk's impulse solver for a clean, no-spin FIRST bounce only (see
+     * the class doc). The rail-friction impulse on that first bounce imparts
+     * torque, so the ball carries real spin into any second (or third)
+     * bounce — spin the curve was never derived for. Re-applying the same
+     * no-spin curve to every segment of a walked bank path compounds a few
+     * degrees of error per extra bounce, which on a long second segment is
+     * enough to flip which rail gets hit entirely. A single bank shot only
+     * ever hits one rail, so it was never affected — this only matters from
+     * the second bounce of a double (or later bounces of a triple) onward.
+     * Callers should use [reflect] for a path's first bounce and this for
+     * every bounce after it.
+     */
+    fun reflectMirror(dx: Float, dy: Float, hitVertical: Boolean): FloatArray? {
+        val len = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+        if (len < 1e-4f) return null
+        return if (hitVertical) {
+            floatArrayOf(-dx / len, dy / len)
+        } else {
+            floatArrayOf(dx / len, -dy / len)
+        }
+    }
+
+    /**
      * Returns the reflected outgoing unit direction as [dx, dy], or null if
      * the incoming direction was degenerate (shouldn't happen in practice —
      * callers should just stop drawing that direction in that case).

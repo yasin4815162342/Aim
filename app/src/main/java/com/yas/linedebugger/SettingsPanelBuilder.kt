@@ -8,6 +8,7 @@ import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 
 /**
  * Builds the full set of tweak controls exactly once, so the in-app
@@ -71,7 +72,7 @@ object SettingsPanelBuilder {
         fun floatSlider(
             label: String, min: Float, max: Float, initial: Float, steps: Int,
             format: (Float) -> String, onSet: (Float) -> Unit
-        ) {
+        ): Pair<TextView, SeekBar> {
             val tv = TextView(context).apply { text = "$label: ${format(initial)}"; setTextColor(Color.WHITE) }
             root.addView(tv)
             val sb = SeekBar(context).apply {
@@ -88,6 +89,7 @@ object SettingsPanelBuilder {
                 override fun onStopTrackingTouch(seek: SeekBar?) {}
             })
             root.addView(sb)
+            return tv to sb
         }
 
         // Bug #4: the correction sliders (Bank Correction Curve) span a wide
@@ -321,7 +323,7 @@ object SettingsPanelBuilder {
         intSlider("Max lines (total segments)", AutoAimPrefs.MAX_LINES_MIN, AutoAimPrefs.MAX_LINES_MAX, Tunables.maxLines) {
             Tunables.maxLines = it; AutoAimPrefs.setMaxLines(it)
         }
-        floatSlider(
+        val (ghostBallLabel, ghostBallSeek) = floatSlider(
             "Ghost ball size", AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX, AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX,
             Tunables.ghostBallDiameterPx, 100, { "%.0f px".format(it) }
         ) {
@@ -330,6 +332,26 @@ object SettingsPanelBuilder {
             OverlayController.onGhostBallDiameterChanged(it)
         }
         hint("Bug #3 fix: also insets the wall so a bank reflects off the ball's center, not the table edge. Shared by the automatic ray and the manual CUE/TARGET balls — see the Manual Controller section in the main app screen.")
+        hint("Bug #2 fix: auto-set from the reference game's real ball/table proportions every time you calibrate the table, since a fixed px number can't be right on every device/table size. Tweak the slider above only to fine-tune further; use the button below to reapply the calibrated value without recalibrating.")
+        root.addView(Button(context).apply {
+            text = "Match ball size to table calibration"
+            setOnClickListener {
+                val applied = OverlayController.matchBallSizeToCalibration()
+                if (applied) {
+                    val v = Tunables.ghostBallDiameterPx
+                    ghostBallLabel.text = "Ghost ball size: %.0f px".format(v)
+                    val steps = ghostBallSeek.max
+                    ghostBallSeek.progress = Math.round(
+                        (v - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) /
+                            (AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) * steps
+                    ).coerceIn(0, steps)
+                    Toast.makeText(context, "Ball size set to %.0f px from table calibration".format(v), Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Calibrate the table first", Toast.LENGTH_SHORT).show()
+                }
+                onChanged()
+            }
+        })
         checkbox("Double line", Tunables.doubleLineEnabled) {
             Tunables.doubleLineEnabled = it; AutoAimPrefs.setDoubleLineEnabled(it)
         }

@@ -106,6 +106,7 @@ object AutoAimPrefs {
 
     // Manual KISS / DEST controller (kiss-shot assist)
     private const val KEY_MANUAL_KISS_ENABLED = "manual_kiss_enabled"
+    private const val KEY_MANUAL_KISS_ACTIVE = "manual_kiss_active"
     private const val KEY_MANUAL_KISS_RADIUS_SCALE_PERCENT = "manual_kiss_radius_scale_percent"
     private const val KEY_MANUAL_KISS_THROW_ANGLE_DEG = "manual_kiss_throw_angle_deg"
     private const val KEY_MANUAL_KISS_SIDE_LOCK = "manual_kiss_side_lock"
@@ -292,6 +293,10 @@ object AutoAimPrefs {
 
     // ---- Manual KISS / DEST controller (kiss-shot assist) ----
     const val DEFAULT_MANUAL_KISS_ENABLED = false
+    // Defaults to active so turning the checkbox on behaves like it always
+    // did before the tap-to-toggle existed — starts in kiss mode (green),
+    // not silently parked off (red).
+    const val DEFAULT_MANUAL_KISS_ACTIVE = true
 
     // Tweak 1 — ball-size calibration for the kiss solve only (percent of
     // the shared ghost-ball diameter). Kept separate from the shared
@@ -477,6 +482,8 @@ object AutoAimPrefs {
 
     fun isManualKissEnabled() = prefs.getBoolean(KEY_MANUAL_KISS_ENABLED, DEFAULT_MANUAL_KISS_ENABLED)
     fun setManualKissEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_KISS_ENABLED, v).apply() }
+    fun isManualKissActive() = prefs.getBoolean(KEY_MANUAL_KISS_ACTIVE, DEFAULT_MANUAL_KISS_ACTIVE)
+    fun setManualKissActive(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_KISS_ACTIVE, v).apply() }
 
     fun getManualKissRadiusScalePercent() =
         prefs.getFloat(KEY_MANUAL_KISS_RADIUS_SCALE_PERCENT, DEFAULT_MANUAL_KISS_RADIUS_SCALE_PERCENT)
@@ -551,6 +558,7 @@ object AutoAimPrefs {
         Tunables.manualGhostRailEnabled = isManualGhostRailEnabled()
 
         Tunables.manualKissEnabled = isManualKissEnabled()
+        Tunables.manualKissActive = isManualKissActive()
         Tunables.manualKissRadiusScalePercent = getManualKissRadiusScalePercent()
         Tunables.manualKissThrowAngleDeg = getManualKissThrowAngleDeg()
         Tunables.manualKissSideLock = getManualKissSideLock()

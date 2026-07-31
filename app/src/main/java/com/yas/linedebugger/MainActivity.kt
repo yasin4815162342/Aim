@@ -61,7 +61,7 @@ class MainActivity : ComponentActivity() {
         })
 
         root.addView(Button(this).apply {
-            text = "2. Start"
+            text = "2. Start (Screen Capture + Auto Detection)"
             setOnClickListener {
                 if (!Settings.canDrawOverlays(this@MainActivity)) {
                     statusText.text = "Overlay permission not granted yet."
@@ -76,6 +76,29 @@ class MainActivity : ComponentActivity() {
                     return@setOnClickListener
                 }
                 projectionLauncher.launch(mgr.createScreenCaptureIntent())
+            }
+        })
+
+        // Feature request: Manual Only mode. No screen-capture permission
+        // is ever requested — the service just hosts the manual
+        // CUE/TARGET/kiss controller, calibration, and tweak panel, with
+        // no Ray Circle/Ray Monitor (nothing to detect against). Only one
+        // mode can run at a time — Stop before switching.
+        root.addView(Button(this).apply {
+            text = "2b. Start Manual Only (no screen recording)"
+            setOnClickListener {
+                if (!Settings.canDrawOverlays(this@MainActivity)) {
+                    statusText.text = "Overlay permission not granted yet."
+                    return@setOnClickListener
+                }
+                if (Build.VERSION.SDK_INT >= 33) {
+                    notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                CaptureService.startManualOnly(this@MainActivity)
+                statusText.text = "Manual Only running — no screen capture. Switch to the pool " +
+                    "app; use the Manual Controller section below (enable it if it isn't " +
+                    "already) for CUE/TARGET/kiss shots. Table calibration is available in " +
+                    "the floating panel same as before."
             }
         })
 

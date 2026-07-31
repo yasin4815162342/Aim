@@ -47,6 +47,18 @@ private const val DASH_GAP_PX = 16f
 // user-tunable, same as it wasn't in the Manual app.
 private const val MANUAL_HANDLE_HITBOX_PX = 250
 
+// DEST (kiss-shot pocket marker) doesn't need nearly as much grab area as
+// CUE/TARGET — it's a small dot, not a ball, and the full-size hitbox was
+// swallowing touches meant for whatever's near it on screen. Half size.
+private const val DEST_HANDLE_HITBOX_PX = MANUAL_HANDLE_HITBOX_PX / 2
+
+// A touch that moves less than this many RAW screen pixels between DOWN
+// and UP counts as a tap rather than a drag (used by DEST's tap-to-toggle
+// — see ManualHandle's onTapped). Measured in raw finger pixels, not
+// sensitivity-scaled ones, so the sensitivity slider can't make tapping
+// feel twitchier or a real short drag get misread as a tap.
+private const val TAP_SLOP_PX = 18f
+
 // How far (in raw drag pixels) TARGET must be pulled past a calibrated
 // rail edge before it actually lets go and moves back toward the table
 // centre. Only TARGET gets this — it's the bank-shot handle, so sitting
@@ -66,11 +78,41 @@ private const val RAY_ZONE_EXCLUSION_FACTOR = 1.20f
 // doesn't eat the whole screen while still showing several sliders.
 private const val PANEL_HEIGHT_PX = 520
 
+// Bug #2 fix (ghost ball size/roundness): sourced directly from the
+// reference Chipmunk pool engine's PoolPhysics.js, since the app is
+// mimicking that engine's table exactly.
+//   ball_radius: 20  → PHYSICS_BALL_DIAMETER = 40 (matches this app's old
+//     fixed default — that was never a coincidence, it's where 40 came
+//     from — but it's only correct at a 1:1 physics-unit-to-screen-pixel
+//     scale, which real devices essentially never render at).
+//   end_rail cushions at x=±681 → long-axis playing surface = 1362 units.
+//   side_rail cushions at y=±341 → short-axis playing surface = 682 units.
+// The playing surface is what the table-calibration corners are dragged
+// onto (the visible rail/cushion line), so once calibrated we know the
+// on-screen pixels-per-physics-unit scale exactly and can derive the
+// ball's true on-screen diameter with no guesswork — same uniform scale
+// the reference engine itself applies (PhysicsSprite._setX/_setY use one
+// scalar for both axes), so a correctly-derived ghost ball is always a
+// perfect circle, same as the real balls.
+private const val PHYSICS_BALL_DIAMETER = 40f
+private const val PHYSICS_TABLE_LENGTH = 1362f
+private const val PHYSICS_TABLE_WIDTH = 682f
+
 object OverlayController {
 
     @Volatile var circleCenterX: Int = 400
     @Volatile var circleCenterY: Int = 800
     @Volatile var lastResult: DetectionResult? = null
+
+    // Feature request: Manual Only mode (no screen recording). When true,
+    // there's no CaptureService frame pipeline running at all, so the Ray
+    // Circle drag-handle and the Ray Monitor debug preview are both
+    // meaningless clutter — attach() skips creating the circle handle, and
+    // DrawOverlayView skips drawing both. Everything else (manual
+    // CUE/TARGET/DEST controller, kiss shot, table calibration, tweak
+    // panel) is identical either way, since none of it depends on capture.
+    @Volatile var captureless: Boolean = false
+        private set
 
     // --- Candidate lock (anti-blink, but switches fast on big angle change) ---
     private var lockedResult: DetectionResult? = null
@@ -186,8 +228,9 @@ object OverlayController {
         }
     }
 
-    fun attach(svc: Service) {
+    fun attach(svc: Service, captureless: Boolean = false) {
         service = svc
+        OverlayController.captureless = captureless
         val wm = svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
 
@@ -210,7 +253,12 @@ object OverlayController {
         ).apply { applyFullScreenFlags() }
         wm.addView(dView, drawParams)
 
-        attachCircleHandle(svc, wm)
+        // Manual Only mode: no capture pipeline is running, so the Ray
+        // Circle drag-handle has nothing to detect against — leave it
+        // uncreated instead of showing a dead, draggable control.
+        if (!captureless) {
+            attachCircleHandle(svc, wm)
+        }
         applyHandleVisibility()
         buildPanel(svc, wm)
 
@@ -374,17 +422,22 @@ object OverlayController {
      * Hide/Show notification action is a single master switch for every
      * draggable overlay, not just the automatic ones. */
     private fun applyHandleVisibility() {
-        val wm = windowManager ?: return
-        val hView = handleView ?: return
-        val params = handleParams ?: return
-        if (Tunables.aimVisible) {
-            hView.visibility = View.VISIBLE
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-        } else {
-            hView.visibility = View.INVISIBLE
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        // Circle handle doesn't exist in captureless (Manual Only) mode —
+        // guard just this block instead of early-returning the whole
+        // function, so the manual-handle toggles below still run.
+        val wm = windowManager
+        val hView = handleView
+        val params = handleParams
+        if (wm != null && hView != null && params != null) {
+            if (Tunables.aimVisible) {
+                hView.visibility = View.VISIBLE
+                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            } else {
+                hView.visibility = View.INVISIBLE
+                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            }
+            runCatching { wm.updateViewLayout(hView, params) }
         }
-        runCatching { wm.updateViewLayout(hView, params) }
         manualCueHandle?.setHidden(!Tunables.aimVisible)
         manualTargetHandle?.setHidden(!Tunables.aimVisible)
         manualDestHandle?.setHidden(!Tunables.aimVisible)
@@ -486,6 +539,49 @@ object OverlayController {
         edgeBHandle?.remove(); edgeBHandle = null
         edgeADPad?.remove(); edgeADPad = null
         edgeBDPad?.remove(); edgeBDPad = null
+
+        // Bug #2 fix: re-derive ghost ball size from the calibration we
+        // just saved, so it's correct for this table/device without the
+        // user having to eyeball the slider.
+        matchBallSizeToCalibration()
+    }
+
+    /**
+     * Bug #2 fix: derives the correct on-screen ghost-ball diameter from
+     * the CURRENTLY SAVED table calibration (Tunables.tableLeft/Top/Right/
+     * Bottom) and the reference engine's known ball/table proportions (see
+     * the PHYSICS_* constants above), then applies + persists it. Returns
+     * false (does nothing) if the table hasn't been calibrated yet.
+     *
+     * Called automatically right after every calibration save, and also
+     * reachable on demand from the "Match ball size to table calibration"
+     * button in the settings panel — e.g. to reapply after manually
+     * fiddling with the slider, without redoing the whole calibration.
+     *
+     * Averages the scale computed from both table axes (long ÷ 1362,
+     * short ÷ 682) rather than just one, so a slightly-off calibration
+     * splits its error across both instead of the ball size fully
+     * inheriting whichever axis you happened to calibrate less carefully.
+     */
+    fun matchBallSizeToCalibration(): Boolean {
+        if (Tunables.tableLeft < 0f) return false
+        val calWidthPx = Tunables.tableRight - Tunables.tableLeft
+        val calHeightPx = Tunables.tableBottom - Tunables.tableTop
+        if (calWidthPx <= 0f || calHeightPx <= 0f) return false
+
+        val longPx = maxOf(calWidthPx, calHeightPx)
+        val shortPx = minOf(calWidthPx, calHeightPx)
+        val scaleFromLength = longPx / PHYSICS_TABLE_LENGTH
+        val scaleFromWidth = shortPx / PHYSICS_TABLE_WIDTH
+        val scale = (scaleFromLength + scaleFromWidth) / 2f
+
+        val diameter = (PHYSICS_BALL_DIAMETER * scale).coerceIn(
+            AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX, AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX
+        )
+        Tunables.ghostBallDiameterPx = diameter
+        AutoAimPrefs.setGhostBallDiameterPx(diameter)
+        onGhostBallDiameterChanged(diameter)
+        return true
     }
 
     // ---------------- Manual CUE / TARGET controller ----------------
@@ -549,6 +645,20 @@ object OverlayController {
         drawView?.invalidate()
     }
 
+    /** Toggled by tapping (not dragging) the DEST marker — see
+     * ManualHandle's onTapped, wired up in [attachManualDestHandle]. Unlike
+     * [setManualKissEnabled], this never touches the handle itself: DEST
+     * stays right where it is, it just switches the trajectory between the
+     * kiss-shot solve (green) and the plain CUE/TARGET bank shot (red),
+     * so nobody has to dig into settings mid-shot to switch back and
+     * forth. */
+    fun setManualKissActive(active: Boolean) {
+        Tunables.manualKissActive = active
+        AutoAimPrefs.setManualKissActive(active)
+        manualDestHandle?.refreshVisual()
+        drawView?.invalidate()
+    }
+
     private fun attachManualDestHandle() {
         val svc = service ?: return
         val wm = windowManager ?: return
@@ -559,8 +669,10 @@ object OverlayController {
         manualDestY = screenHeight * 0.15f
 
         manualDestHandle = ManualHandle(
-            svc, wm, screenWidth, screenHeight, ManualRole.DEST, manualDestX, manualDestY
-        ) { x, y -> manualDestX = x; manualDestY = y; drawView?.invalidate() }
+            svc, wm, screenWidth, screenHeight, ManualRole.DEST, manualDestX, manualDestY,
+            onMoved = { x, y -> manualDestX = x; manualDestY = y; drawView?.invalidate() },
+            onTapped = { setManualKissActive(!Tunables.manualKissActive) }
+        )
 
         applyHandleVisibility()
         drawView?.invalidate()
@@ -948,12 +1060,16 @@ private class ManualHandle(
     role: ManualRole,
     initX: Float,
     initY: Float,
-    private val onMoved: (Float, Float) -> Unit
+    private val onMoved: (Float, Float) -> Unit,
+    private val onTapped: (() -> Unit)? = null
 ) {
     private val view = ManualHandleView(context, role, Tunables.ghostBallDiameterPx)
+    // DEST is a small pocket-aim dot, not a ball — it doesn't need
+    // CUE/TARGET's big grab area. See DEST_HANDLE_HITBOX_PX.
+    private val hitboxPx: Int = if (role == ManualRole.DEST) DEST_HANDLE_HITBOX_PX else MANUAL_HANDLE_HITBOX_PX
     private val params = WindowManager.LayoutParams(
-        MANUAL_HANDLE_HITBOX_PX,
-        MANUAL_HANDLE_HITBOX_PX,
+        hitboxPx,
+        hitboxPx,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -963,11 +1079,15 @@ private class ManualHandle(
 
     init {
         params.gravity = Gravity.TOP or Gravity.START
-        params.x = (initX - MANUAL_HANDLE_HITBOX_PX / 2f).toInt()
-        params.y = (initY - MANUAL_HANDLE_HITBOX_PX / 2f).toInt()
+        params.x = (initX - hitboxPx / 2f).toInt()
+        params.y = (initY - hitboxPx / 2f).toInt()
 
         var lastRawX = 0f; var lastRawY = 0f
         var exactX = 0f; var exactY = 0f
+        // Tap-vs-drag tracking for onTapped (DEST only — see TAP_SLOP_PX).
+        // Total RAW finger travel this gesture, unaffected by sensitivity
+        // or by sticky-rail resistance eating some of the drag distance.
+        var rawTravel = 0f
         // Sticky-rail state (TARGET only — see TARGET_EDGE_STICKY_PX).
         // stuckEdge*: -1 = pinned at the min-edge, 0 = free, 1 = pinned at
         // the max-edge. pullDebt*: how far outward it's been dragged while
@@ -981,6 +1101,7 @@ private class ManualHandle(
                 MotionEvent.ACTION_DOWN -> {
                     lastRawX = event.rawX; lastRawY = event.rawY
                     exactX = params.x.toFloat(); exactY = params.y.toFloat()
+                    rawTravel = 0f
                     pullDebtX = 0f; pullDebtY = 0f
                     // Re-derive "is it currently resting on an edge" from
                     // where the handle actually is, so a fresh touch on an
@@ -988,7 +1109,7 @@ private class ManualHandle(
                     // only mid-gesture.
                     stuckEdgeX = 0; stuckEdgeY = 0
                     if (role == ManualRole.TARGET && Tunables.tableLeft >= 0f) {
-                        val halfHit = MANUAL_HANDLE_HITBOX_PX / 2f
+                        val halfHit = hitboxPx / 2f
                         val halfBall = Tunables.ghostBallDiameterPx / 2f
                         val minCX = Tunables.tableLeft + halfBall
                         val maxCX = Tunables.tableRight - halfBall
@@ -1010,7 +1131,8 @@ private class ManualHandle(
                     val rawY = event.rawY
                     val dxRaw = (rawX - lastRawX) * Tunables.manualSensitivity
                     val dyRaw = (rawY - lastRawY) * Tunables.manualSensitivity
-                    val halfHit = MANUAL_HANDLE_HITBOX_PX / 2f
+                    rawTravel += kotlin.math.hypot((rawX - lastRawX).toDouble(), (rawY - lastRawY).toDouble()).toFloat()
+                    val halfHit = hitboxPx / 2f
 
                     // When the table is calibrated, the handle centre is
                     // limited to the INSET table rect (table edge ± half
@@ -1077,11 +1199,11 @@ private class ManualHandle(
                     } else {
                         exactX += dxRaw
                         exactY += dyRaw
-                        val margin = MANUAL_HANDLE_HITBOX_PX * EDGE_LIMIT_FRACTION
+                        val margin = hitboxPx * EDGE_LIMIT_FRACTION
                         val minX = -margin
-                        val maxX = screenWidth - MANUAL_HANDLE_HITBOX_PX + margin
+                        val maxX = screenWidth - hitboxPx + margin
                         val minY = -margin
-                        val maxY = screenHeight - MANUAL_HANDLE_HITBOX_PX + margin
+                        val maxY = screenHeight - hitboxPx + margin
                         if (exactX < minX) exactX = minX else if (exactX > maxX) exactX = maxX
                         if (exactY < minY) exactY = minY else if (exactY > maxY) exactY = maxY
                     }
@@ -1092,7 +1214,11 @@ private class ManualHandle(
 
 
                     runCatching { wm.updateViewLayout(view, params) }
-                    onMoved(params.x + MANUAL_HANDLE_HITBOX_PX / 2f, params.y + MANUAL_HANDLE_HITBOX_PX / 2f)
+                    onMoved(params.x + hitboxPx / 2f, params.y + hitboxPx / 2f)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (onTapped != null && rawTravel < TAP_SLOP_PX) onTapped.invoke()
                     true
                 }
                 else -> false
@@ -1103,6 +1229,12 @@ private class ManualHandle(
 
     fun setVisualDiameter(diameterPx: Float) {
         view.setVisualDiameterPx(diameterPx)
+    }
+
+    /** Forces the handle's own view to redraw — e.g. after a tap-toggled
+     * state change that onDraw reads directly from Tunables. */
+    fun refreshVisual() {
+        view.invalidate()
     }
 
     fun setHidden(hidden: Boolean) {
@@ -1123,8 +1255,11 @@ private class ManualHandle(
 /**
  * Visual for a manual handle — a big translucent hitbox (red circle for
  * TARGET, black square for CUE) plus a ball-diameter ghost-ball outline
- * with a red center dot for CUE/TARGET. DEST is just a small red dot
- * (no ball involved, it's a pocket aim point).
+ * with a red center dot for CUE/TARGET. DEST is its own thing: a small
+ * dot (no ball involved, it's a pocket aim point) that's green when
+ * kiss-shot mode is active and red when parked off — tap it to toggle
+ * (see ManualHandle's onTapped). It also gets a smaller touch hitbox
+ * than CUE/TARGET — see DEST_HANDLE_HITBOX_PX.
  */
 private class ManualHandleView(
     context: Context,
@@ -1150,6 +1285,18 @@ private class ManualHandleView(
         style = Paint.Style.FILL
         color = Color.RED
     }
+    // DEST's own dot color reflects whether tapping it has kiss-shot mode
+    // active (green) or parked/off (red) — see Tunables.manualKissActive
+    // and ManualHandle's onTapped. Separate Paints from centerDot above so
+    // CUE/TARGET's ghost-ball dot (always red) is never affected.
+    private val destActiveDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.GREEN
+    }
+    private val destInactiveDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.RED
+    }
 
     fun setVisualDiameterPx(diameterPx: Float) {
         visualDiameterPx = diameterPx
@@ -1162,8 +1309,10 @@ private class ManualHandleView(
         val ch = minOf(width, height) / 2f - 8f
 
         if (role == ManualRole.DEST) {
-            // Just a pocket-aim dot — no ball, no ghost ring.
-            canvas.drawCircle(cx, cy, 16f, centerDot)
+            // Just a pocket-aim dot — no ball, no ghost ring. Color shows
+            // whether kiss-shot mode is currently active (tap to toggle).
+            val dot = if (Tunables.manualKissActive) destActiveDot else destInactiveDot
+            canvas.drawCircle(cx, cy, 16f, dot)
             canvas.drawCircle(cx, cy, 16f, outline)
             return
         }
@@ -1314,12 +1463,17 @@ class DrawOverlayView(context: Context) : View(context) {
         val cy = OverlayController.circleCenterY.toFloat()
         val half = Tunables.circleDiameter / 2f
 
-        circlePaint.alpha = Tunables.circleAlpha
-        canvas.drawCircle(cx, cy, half, circlePaint)
-
+        // Manual Only mode: no capture pipeline exists, so the Ray Circle
+        // ring and Ray Monitor preview have nothing to show — never draw
+        // them (the drag-handle itself is already never created, see
+        // OverlayController.attach). Falls through to drawManualController
+        // below either way — that's independent of capture entirely.
         val result = OverlayController.lastResult
+        if (!OverlayController.captureless) {
+            circlePaint.alpha = Tunables.circleAlpha
+            canvas.drawCircle(cx, cy, half, circlePaint)
 
-        if (Tunables.rayMonitorEnabled) {
+            if (Tunables.rayMonitorEnabled) {
             if (result != null && result.previewArgb.isNotEmpty()) {
                 // Preview is captured at capture-scale resolution (can be
                 // smaller than the on-screen Ray Circle). Displayed here at
@@ -1360,6 +1514,7 @@ class DrawOverlayView(context: Context) : View(context) {
             } else {
                 canvas.drawText("no line detected", 24f, 60f, textPaint)
             }
+        }
         }
 
         // Manual controller draws independently of whether the automatic
@@ -1516,7 +1671,16 @@ class DrawOverlayView(context: Context) : View(context) {
                 canvas.drawCircle(endX, endY, 4f, markerDot)
             }
 
-            val reflected = BankShot.reflect(dx, dy, hitVertical) ?: break
+            val reflected = if (segment == 0) {
+                BankShot.reflect(dx, dy, hitVertical)
+            } else {
+                // Bug fix (Double Bank Shots): the correction curve is only
+                // valid for a clean no-spin first bounce — every bounce
+                // after that gets a pure mirror instead. See
+                // BankShot.reflectMirror's doc for why.
+                BankShot.reflectMirror(dx, dy, hitVertical)
+            }
+            if (reflected == null) break
             dx = reflected[0]; dy = reflected[1]
             curX = endX; curY = endY
         }
@@ -1700,8 +1864,13 @@ class DrawOverlayView(context: Context) : View(context) {
         // exactly like TARGET means different things between a plain cut
         // and a bank shot. CUE is still just the moving ball's approach
         // point. So this replaces the bank branch below entirely rather
-        // than running alongside it.
-        if (Tunables.manualKissEnabled) {
+        // than running alongside it — but only while DEST is actually
+        // toggled active (green). manualKissEnabled just means DEST
+        // *exists*; tapping it active/inactive (manualKissActive) is what
+        // actually switches between kiss and plain bank trajectories, so
+        // you're never forced to leave the settings panel to flip back and
+        // forth mid-session.
+        if (Tunables.manualKissEnabled && Tunables.manualKissActive) {
             val destX = OverlayController.manualDestX
             val destY = OverlayController.manualDestY
             val solved = KissShot.solve(
@@ -1717,6 +1886,12 @@ class DrawOverlayView(context: Context) : View(context) {
             if (solved != null) {
                 val ghostX = solved[0]; val ghostY = solved[1]
                 val contactX = solved[2]; val contactY = solved[3]
+                // Approach guide: CUE's own ghost-ball centre straight to
+                // the contact point on TARGET's edge — this is the line
+                // the old (now-removed) dedicated kiss-shot controller used
+                // to draw. Departure guide: contact point onward to DEST,
+                // showing TARGET's expected path after the kiss.
+                canvas.drawLine(cueX, cueY, contactX, contactY, kissGuidePaint)
                 canvas.drawLine(ghostX, ghostY, destX, destY, kissGuidePaint)
                 canvas.drawCircle(contactX, contactY, 3f, kissContactDot)
             }
@@ -1789,7 +1964,11 @@ class DrawOverlayView(context: Context) : View(context) {
             remaining -= tDraw
             if (tDraw < tWall - 0.01f) break
 
-            val hitVertical = abs(tWall - tX) < 1e-3f
+            // Prefer vertical when both are essentially equal (corner), same
+            // as the automatic ray's drawDirection — was a separate latent
+            // inconsistency between the two loops, not the double-bank
+            // cause itself, but worth fixing alongside it.
+            val hitVertical = abs(tWall - tX) <= abs(tWall - tY)
 
             if (Tunables.manualGhostRailEnabled && segment + 1 < maxLines) {
                 // Centre sits on the inset wall → ghost-ball edge flush on
@@ -1802,7 +1981,12 @@ class DrawOverlayView(context: Context) : View(context) {
                 canvas.drawCircle(endX, endY, 4f, manualMarkerDot)
             }
 
-            val reflected = BankShot.reflect(segDx, segDy, hitVertical) ?: break
+            val reflected = if (segment == 0) {
+                BankShot.reflect(segDx, segDy, hitVertical)
+            } else {
+                BankShot.reflectMirror(segDx, segDy, hitVertical)
+            }
+            if (reflected == null) break
             segDx = reflected[0]; segDy = reflected[1]
             curX = endX; curY = endY
         }

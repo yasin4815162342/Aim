@@ -119,6 +119,12 @@ object Tunables {
     // the ball being kissed off of, DEST on the pocket. Same "manual-only"
     // isolation as the CUE/TARGET section above. ---
     @Volatile var manualKissEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_KISS_ENABLED
+    // Whether kiss-shot mode is the one actually driving the trajectory
+    // right now (green DEST marker) vs. parked off so CUE/TARGET fall
+    // back to a plain bank shot (red DEST marker). Toggled by tapping
+    // (not dragging) DEST — separate from manualKissEnabled, which only
+    // controls whether the DEST marker exists at all.
+    @Volatile var manualKissActive: Boolean = AutoAimPrefs.DEFAULT_MANUAL_KISS_ACTIVE
     // Tweak 1: corrects a mismatch between the ghost-ball diameter and the
     // real in-game ball's collision size — shifts where along purple's
     // edge contact is solved for.

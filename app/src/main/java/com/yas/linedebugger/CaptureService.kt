@@ -34,6 +34,15 @@ class CaptureService : Service() {
     private var bgHandler: Handler? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isCapturing = false
+    // Manual Only mode (feature request): the service is running purely to
+    // host the overlay (manual CUE/TARGET/kiss controller + calibration),
+    // with no MediaProjection/VirtualDisplay/ImageReader ever created. Which
+    // mode we're in isn't known until the first onStartCommand (onCreate
+    // has no intent extras yet), so attach() moved out of onCreate and into
+    // onStartCommand, gated by `attached` so a second onStartCommand call
+    // (re-delivery, notification actions, etc.) never double-attaches.
+    private var isManualOnly = false
+    private var attached = false
     // Cap detection to ~30 fps and skip frames while a detect is still running
     // so the bg thread never builds a multi-frame backlog (root of lag/jagged motion).
     private var lastProcessUptimeMs = 0L
@@ -95,8 +104,8 @@ class CaptureService : Service() {
         bgThread = HandlerThread("frame-processor").also { it.start() }
         bgHandler = Handler(bgThread!!.looper)
 
-        // Always attach overlays here. They stay until explicit stop.
-        OverlayController.attach(this)
+        // Overlay attach happens in onStartCommand once the mode (capture
+        // vs Manual Only) is known — see the `attached` field above.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -117,6 +126,22 @@ class CaptureService : Service() {
             }
         }
 
+        // Manual Only mode: attach the overlay (manual controller + kiss
+        // shot + calibration, no Ray Circle/Ray Monitor) and stop right
+        // there — never touches MediaProjectionManager at all, so there's
+        // no capture permission prompt and no capture indicator.
+        val manualOnly = intent?.getBooleanExtra(EXTRA_MANUAL_ONLY, false) ?: false
+        if (manualOnly) {
+            if (!attached) {
+                attached = true
+                isManualOnly = true
+                refreshNotification()
+                OverlayController.attach(this, captureless = true)
+            }
+            // Already running (either mode) — ignore; Stop first to switch.
+            return START_STICKY
+        }
+
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
             ?: Activity.RESULT_CANCELED
         val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
@@ -129,6 +154,16 @@ class CaptureService : Service() {
 
         // Already capturing? Ignore duplicate.
         if (isCapturing) return START_STICKY
+        // Already attached in Manual Only mode? Ignore — Stop first to
+        // switch to Screen Capture mode instead of attaching a second time.
+        if (attached && isManualOnly) return START_STICKY
+
+        if (!attached) {
+            attached = true
+            isManualOnly = false
+            refreshNotification()
+            OverlayController.attach(this, captureless = false)
+        }
 
         val mgr = getSystemService(MediaProjectionManager::class.java)
         val projection = mgr.getMediaProjection(resultCode, data) ?: return START_STICKY
@@ -332,6 +367,11 @@ class CaptureService : Service() {
     private fun buildNotification(): Notification {
         val visibilityLabel = if (OverlayController.isAimVisible()) "Hide" else "Show"
         val tweaksLabel = if (OverlayController.isTweakPanelVisible()) "Tweaks: Hide" else "Tweaks: Show"
+        val contentText = if (isManualOnly) {
+            "Manual overlay running — no screen capture"
+        } else {
+            "Capturing screen for guideline detection"
+        }
 
         val stopAction = Notification.Action.Builder(
             Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
@@ -351,7 +391,7 @@ class CaptureService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_crop)
             .setContentTitle("LineDebugger running")
-            .setContentText("Capturing screen for guideline detection")
+            .setContentText(contentText)
             .setOngoing(true)
             .addAction(stopAction)
             .addAction(visibilityAction)
@@ -375,6 +415,7 @@ class CaptureService : Service() {
     companion object {
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_DATA = "data"
+        private const val EXTRA_MANUAL_ONLY = "manual_only"
         private const val NOTIF_ID = 1
         private const val CHANNEL_ID = "line_debugger_capture"
 
@@ -386,6 +427,15 @@ class CaptureService : Service() {
             val intent = Intent(context, CaptureService::class.java)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_DATA, data)
+            context.startForegroundService(intent)
+        }
+
+        // Manual Only mode: no screen-capture permission is requested at
+        // all — the service just hosts the overlay (manual controller,
+        // kiss shot, calibration) with no MediaProjection ever touched.
+        fun startManualOnly(context: Context) {
+            val intent = Intent(context, CaptureService::class.java)
+                .putExtra(EXTRA_MANUAL_ONLY, true)
             context.startForegroundService(intent)
         }
 
