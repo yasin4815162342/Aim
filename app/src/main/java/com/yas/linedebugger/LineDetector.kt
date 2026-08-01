@@ -36,6 +36,7 @@ object LineDetector {
     private var qyBuf: IntArray = IntArray(0)
     private var brightnessBuf: IntArray = IntArray(0)
     private var rejectedRailBuf: BooleanArray = BooleanArray(0)
+    private val EMPTY_PREVIEW = IntArray(0)
 
     // Weight = brightness ABOVE the inclusion threshold, not raw brightness.
     // The candidate mask is a hard cut (bright > minBrightness), so a pixel
@@ -190,21 +191,29 @@ object LineDetector {
         // --- Stage 2: kill remaining circle-like blobs ---
         killCircularBlobsInPlace(lineMask, size)
 
-        // Preview
-        val preview = IntArray(n)
-        for (i in 0 until n) {
-            val row = i / size
-            val col = i - row * size
-            val ddx = (col + 0.5) - zoneCenter
-            val ddy = (row + 0.5) - zoneCenter
-            preview[i] = when {
-                ddx * ddx + ddy * ddy > zoneRadiusSq -> 0xFF000000.toInt() // outside Ray Zone circle
-                lineMask[i] -> 0xFFFF00FF.toInt()
-                ballGrown[i] -> 0xFF3060FF.toInt()
-                isCandidate[i] -> 0xFFFFFF00.toInt()
-                rejectedAsRail[i] -> 0xFF6B4423.toInt()
-                else -> 0xFF104010.toInt()
+        // Preview — only built when the Ray Monitor debug thumbnail is
+        // actually on screen to read it. Otherwise this is a full O(n)
+        // pass plus an IntArray(n) allocation every single detection
+        // frame for a result nobody looks at.
+        val preview: IntArray
+        if (Tunables.rayMonitorEnabled) {
+            preview = IntArray(n)
+            for (i in 0 until n) {
+                val row = i / size
+                val col = i - row * size
+                val ddx = (col + 0.5) - zoneCenter
+                val ddy = (row + 0.5) - zoneCenter
+                preview[i] = when {
+                    ddx * ddx + ddy * ddy > zoneRadiusSq -> 0xFF000000.toInt() // outside Ray Zone circle
+                    lineMask[i] -> 0xFFFF00FF.toInt()
+                    ballGrown[i] -> 0xFF3060FF.toInt()
+                    isCandidate[i] -> 0xFFFFFF00.toInt()
+                    rejectedAsRail[i] -> 0xFF6B4423.toInt()
+                    else -> 0xFF104010.toInt()
+                }
             }
+        } else {
+            preview = EMPTY_PREVIEW
         }
 
         // --- Stage 3: prefer strongest elongated component (Scenario A);

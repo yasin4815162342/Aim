@@ -117,7 +117,7 @@ object AutoAimPrefs {
 
     const val GREEN_DIFF_MIN = 0
     const val GREEN_DIFF_MAX = 60
-    const val DEFAULT_GREEN_DIFF = 15
+    const val DEFAULT_GREEN_DIFF = 24
 
     // Bug #2 (green felt conflict): a green-hued pixel is only treated as
     // felt (and thrown away) if it's dimmer than this. Bright green pixels
@@ -137,7 +137,7 @@ object AutoAimPrefs {
     // tones can still be pushed out of the "line" bucket.
     const val MIN_BRIGHTNESS_MIN = 0
     const val MIN_BRIGHTNESS_MAX = 200
-    const val DEFAULT_MIN_BRIGHTNESS = 20
+    const val DEFAULT_MIN_BRIGHTNESS = 40
 
     const val BALL_ERODE_RADIUS_MIN = 1
     const val BALL_ERODE_RADIUS_MAX = 25
@@ -145,23 +145,23 @@ object AutoAimPrefs {
 
     const val BALL_DILATE_GROW_MIN = 0
     const val BALL_DILATE_GROW_MAX = 25
-    const val DEFAULT_BALL_DILATE_GROW = 5
+    const val DEFAULT_BALL_DILATE_GROW = 16
 
     const val MIN_LINE_PIXELS_MIN = 1
     const val MIN_LINE_PIXELS_MAX = 150
-    const val DEFAULT_MIN_LINE_PIXELS = 15
+    const val DEFAULT_MIN_LINE_PIXELS = 71
 
     const val OUTLIER_TRIM_K_MIN = 0.5f
     const val OUTLIER_TRIM_K_MAX = 6.0f
-    const val DEFAULT_OUTLIER_TRIM_K = 2.5f
+    const val DEFAULT_OUTLIER_TRIM_K = 2.8f
 
     const val CIRCLE_DIAMETER_MIN = 40
     const val CIRCLE_DIAMETER_MAX = 220
-    const val DEFAULT_CIRCLE_DIAMETER = 100
+    const val DEFAULT_CIRCLE_DIAMETER = 119
 
     const val CIRCLE_ALPHA_MIN = 20
     const val CIRCLE_ALPHA_MAX = 255
-    const val DEFAULT_CIRCLE_ALPHA = 140
+    const val DEFAULT_CIRCLE_ALPHA = 20
 
     const val DEFAULT_RAY_MONITOR_ENABLED = true
 
@@ -180,11 +180,11 @@ object AutoAimPrefs {
 
     const val AUTO_AIM_WIDTH_MIN_PX = 1.0f
     const val AUTO_AIM_WIDTH_MAX_PX = 10.0f
-    const val DEFAULT_AUTO_AIM_WIDTH_PX = 2.5f
+    const val DEFAULT_AUTO_AIM_WIDTH_PX = 2.6f
 
     const val AUTO_AIM_OPACITY_MIN = 40
     const val AUTO_AIM_OPACITY_MAX = 255
-    const val DEFAULT_AUTO_AIM_OPACITY = 255
+    const val DEFAULT_AUTO_AIM_OPACITY = 100
 
     val DEFAULT_AUTO_AIM_COLOR = Color.WHITE
 
@@ -200,42 +200,32 @@ object AutoAimPrefs {
     // enough range to dial in by eye against whatever scale the table is at.
     const val DOUBLE_LINE_WIDTH_MIN_PX = 4f
     const val DOUBLE_LINE_WIDTH_MAX_PX = 400f
-    const val DEFAULT_DOUBLE_LINE_WIDTH_PX = 60f
+    const val DEFAULT_DOUBLE_LINE_WIDTH_PX = 40f
 
     const val DEFAULT_BANK_MARKER_ENABLED = true
 
-    // Bug #3: shared ghost-ball diameter. Default now matches the Chipmunk
-    // codebase exactly — PoolPhysics.js sets ball_radius: 20 (ball_w: 40),
-    // so 40px is the real ball's diameter, not the old 60px placeholder.
+    // Bug #3: shared ghost-ball diameter. Base reference is the Chipmunk
+    // codebase's ball_w: 40 (PoolPhysics.js ball_radius: 20); default below
+    // is nudged to 41px, Yas's own calibrated value for his table/device.
     const val GHOST_BALL_DIAMETER_MIN_PX = 20f
     const val GHOST_BALL_DIAMETER_MAX_PX = 120f
-    const val DEFAULT_GHOST_BALL_DIAMETER_PX = 40f
+    const val DEFAULT_GHOST_BALL_DIAMETER_PX = 41f
 
     const val BANK_CORRECTION_MIN = -50f
     const val BANK_CORRECTION_MAX = 40f
 
     // Angle control points, 90° and 0° locked at 0 (see BankShot) and have
     // no sliders; these 22 cover the range where a correction actually
-    // matters. Defaults below are NOT flat zero — they're derived by
-    // replaying Chipmunk's own sequential-impulse rail collision formulas
-    // (k_scalar / apply_impulse from chipmunk.js, combined ball×rail
-    // elasticity 0.95×1=0.95 and friction 0.1×0.8=0.08 from physicsData.js)
-    // for a clean, no-spin, no-english first bounce — the same simplifying
-    // assumption the curve itself already relies on. A true e=1 mirror was
-    // never right: friction at the contact point converts some tangential
-    // motion into ball spin via torque, which is NOT uniform across angles.
-    // The result: the bank comes off tighter than a mirror (correction
-    // negative) almost everywhere, peaking near 64°, crosses back to a true
-    // mirror around 18°, then flips to a small "wider than mirror" effect
-    // (positive) from 16° down to 4°. The sliders stay available for anyone
-    // who wants to further compensate for a specific physical table.
+    // matters. Defaults below are Yas's own hand-calibrated values for his
+    // table/device, saved here so a fresh install doesn't need recalibrating.
+    // The sliders stay available for anyone who wants to fine-tune further.
     val BANK_ANGLES = floatArrayOf(
         88f, 84f, 80f, 76f, 72f, 68f, 64f, 60f, 56f, 52f, 48f,
         44f, 40f, 36f, 32f, 28f, 24f, 20f, 16f, 12f, 8f, 4f
     )
     val DEFAULT_BANK_CORRECTIONS = floatArrayOf(
-        -0.55f, -1.64f, -2.71f, -3.75f, -4.74f, -5.67f, -6.52f, -6.08f, -5.37f, -4.65f, -3.92f,
-        -3.21f, -2.53f, -1.90f, -1.33f, -0.85f, -0.44f, -0.13f, 0.08f, 0.20f, 0.23f, 0.16f
+        -0.6f, -1.7f, -3.2f, -4.3f, -5.1f, -6.3f, -7.1f, -7.5f, -6.6f, -5.9f, -4.7f,
+        -2.9f, -3.0f, -2.2f, -1.4f, -0.9f, -0.5f, -0.3f, -0.2f, -0.3f, -0.4f, -0.5f
     )
 
     const val DEFAULT_AIM_VISIBLE = true
@@ -256,8 +246,8 @@ object AutoAimPrefs {
     const val DEFAULT_FELT_VAL_TOLERANCE = 70
 
     const val DEFAULT_RAIL_EXCLUSION_ENABLED = false
-    const val DEFAULT_RAIL_HUE_DEG = 25f
-    const val DEFAULT_RAIL_HUE_TOLERANCE_DEG = 30f
+    const val DEFAULT_RAIL_HUE_DEG = 146f
+    const val DEFAULT_RAIL_HUE_TOLERANCE_DEG = 40f
     const val DEFAULT_RAIL_SAT = 120
     const val DEFAULT_RAIL_SAT_TOLERANCE = 90
     const val DEFAULT_RAIL_VAL = 110
@@ -269,15 +259,15 @@ object AutoAimPrefs {
 
     const val MANUAL_SENSITIVITY_MIN = 0.1f
     const val MANUAL_SENSITIVITY_MAX = 1.5f
-    const val DEFAULT_MANUAL_SENSITIVITY = 1.0f
+    const val DEFAULT_MANUAL_SENSITIVITY = 0.63f
 
     const val MANUAL_LINE_WIDTH_MIN_PX = 1.0f
     const val MANUAL_LINE_WIDTH_MAX_PX = 6.0f
-    const val DEFAULT_MANUAL_LINE_WIDTH_PX = 2.2f
+    const val DEFAULT_MANUAL_LINE_WIDTH_PX = 5.0f
 
     const val MANUAL_LINE_OPACITY_MIN = 60
     const val MANUAL_LINE_OPACITY_MAX = 255
-    const val DEFAULT_MANUAL_LINE_OPACITY = 255
+    const val DEFAULT_MANUAL_LINE_OPACITY = 126
 
     val DEFAULT_MANUAL_LINE_COLOR = Color.WHITE
 
@@ -306,7 +296,7 @@ object AutoAimPrefs {
     // to a size mismatch than plain ghost-ball aiming is.
     const val MANUAL_KISS_RADIUS_SCALE_MIN_PERCENT = 80f
     const val MANUAL_KISS_RADIUS_SCALE_MAX_PERCENT = 120f
-    const val DEFAULT_MANUAL_KISS_RADIUS_SCALE_PERCENT = 100f
+    const val DEFAULT_MANUAL_KISS_RADIUS_SCALE_PERCENT = 92f
 
     // Tweak 2 — residual correction, in degrees: covers ball_friction's
     // spin-transfer throw (not modeled — needs simulated spin/speed) plus
@@ -326,11 +316,11 @@ object AutoAimPrefs {
     // people may want them thinner/fainter (or bolder) independently.
     const val MANUAL_KISS_LINE_WIDTH_MIN_PX = 1.0f
     const val MANUAL_KISS_LINE_WIDTH_MAX_PX = 6.0f
-    const val DEFAULT_MANUAL_KISS_LINE_WIDTH_PX = 2.0f
+    const val DEFAULT_MANUAL_KISS_LINE_WIDTH_PX = 6.0f
 
     const val MANUAL_KISS_LINE_OPACITY_MIN = 60
     const val MANUAL_KISS_LINE_OPACITY_MAX = 255
-    const val DEFAULT_MANUAL_KISS_LINE_OPACITY = 200
+    const val DEFAULT_MANUAL_KISS_LINE_OPACITY = 150
 
     // ---------------- Getters / setters ----------------
 

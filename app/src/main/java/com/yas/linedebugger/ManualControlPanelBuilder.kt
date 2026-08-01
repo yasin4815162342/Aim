@@ -9,6 +9,7 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import java.util.Locale
 
 /**
  * Builds the Manual CUE/TARGET controller section — feature request #1.
@@ -113,13 +114,13 @@ object ManualControlPanelBuilder {
 
         floatSlider(
             "Drag sensitivity", AutoAimPrefs.MANUAL_SENSITIVITY_MIN, AutoAimPrefs.MANUAL_SENSITIVITY_MAX,
-            Tunables.manualSensitivity, 140, { "%.2fx".format(it) }
+            Tunables.manualSensitivity, 140, { "%.2fx".format(Locale.US, it) }
         ) { Tunables.manualSensitivity = it; AutoAimPrefs.setManualSensitivity(it) }
 
         val (ballSizeLabel, ballSizeSeek) = floatSlider(
             "Ball size (shared with Bank Shot section in the floating panel)",
             AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX, AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX,
-            Tunables.ghostBallDiameterPx, 100, { "%.0f px".format(it) }
+            Tunables.ghostBallDiameterPx, 100, { "%.0f px".format(Locale.US, it) }
         ) {
             Tunables.ghostBallDiameterPx = it
             AutoAimPrefs.setGhostBallDiameterPx(it)
@@ -133,13 +134,13 @@ object ManualControlPanelBuilder {
                 val applied = OverlayController.matchBallSizeToCalibration()
                 if (applied) {
                     val v = Tunables.ghostBallDiameterPx
-                    ballSizeLabel.text = "Ball size (shared with Bank Shot section in the floating panel): %.0f px".format(v)
+                    ballSizeLabel.text = "Ball size (shared with Bank Shot section in the floating panel): %.0f px".format(Locale.US, v)
                     val steps = ballSizeSeek.max
                     ballSizeSeek.progress = Math.round(
                         (v - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) /
                             (AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) * steps
                     ).coerceIn(0, steps)
-                    Toast.makeText(context, "Ball size set to %.0f px from table calibration".format(v), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Ball size set to %.0f px from table calibration".format(Locale.US, v), Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(context, "Calibrate the table first (floating panel, while running)", Toast.LENGTH_SHORT).show()
                 }
@@ -150,7 +151,7 @@ object ManualControlPanelBuilder {
         sectionLabel("Manual Line Look")
         floatSlider(
             "Line width", AutoAimPrefs.MANUAL_LINE_WIDTH_MIN_PX, AutoAimPrefs.MANUAL_LINE_WIDTH_MAX_PX,
-            Tunables.manualLineWidthPx, 50, { "%.1f px".format(it) }
+            Tunables.manualLineWidthPx, 50, { "%.1f px".format(Locale.US, it) }
         ) { Tunables.manualLineWidthPx = it; AutoAimPrefs.setManualLineWidthPx(it) }
 
         intSlider(
@@ -188,7 +189,7 @@ object ManualControlPanelBuilder {
         floatSlider(
             "Double line width offset",
             AutoAimPrefs.MANUAL_DOUBLE_LINE_WIDTH_OFFSET_MIN_PX, AutoAimPrefs.MANUAL_DOUBLE_LINE_WIDTH_OFFSET_MAX_PX,
-            Tunables.manualDoubleLineWidthOffsetPx, 120, { "%.0f px".format(it) }
+            Tunables.manualDoubleLineWidthOffsetPx, 120, { "%.0f px".format(Locale.US, it) }
         ) { Tunables.manualDoubleLineWidthOffsetPx = it; AutoAimPrefs.setManualDoubleLineWidthOffsetPx(it) }
 
         checkbox("Show rail ghost ball", Tunables.manualGhostRailEnabled) {
@@ -204,7 +205,7 @@ object ManualControlPanelBuilder {
 
         floatSlider(
             "Kiss line width", AutoAimPrefs.MANUAL_KISS_LINE_WIDTH_MIN_PX, AutoAimPrefs.MANUAL_KISS_LINE_WIDTH_MAX_PX,
-            Tunables.manualKissLineWidthPx, 50, { "%.1f px".format(it) }
+            Tunables.manualKissLineWidthPx, 50, { "%.1f px".format(Locale.US, it) }
         ) { Tunables.manualKissLineWidthPx = it; AutoAimPrefs.setManualKissLineWidthPx(it) }
 
         intSlider(
@@ -215,14 +216,14 @@ object ManualControlPanelBuilder {
         floatSlider(
             "Kiss ball-size calibration",
             AutoAimPrefs.MANUAL_KISS_RADIUS_SCALE_MIN_PERCENT, AutoAimPrefs.MANUAL_KISS_RADIUS_SCALE_MAX_PERCENT,
-            Tunables.manualKissRadiusScalePercent, 40, { "%.0f%%".format(it) }
+            Tunables.manualKissRadiusScalePercent, 40, { "%.0f%%".format(Locale.US, it) }
         ) { Tunables.manualKissRadiusScalePercent = it; AutoAimPrefs.setManualKissRadiusScalePercent(it) }
         hint("If kiss shots consistently land short/long of the pocket, the game's ball collision size probably doesn't quite match the ghost-ball diameter above — tune this until it lines up.")
 
         floatSlider(
             "Kiss fine-tune correction",
             AutoAimPrefs.MANUAL_KISS_THROW_ANGLE_MIN_DEG, AutoAimPrefs.MANUAL_KISS_THROW_ANGLE_MAX_DEG,
-            Tunables.manualKissThrowAngleDeg, 32, { "%.1f°".format(it) }
+            Tunables.manualKissThrowAngleDeg, 32, { "%.1f°".format(Locale.US, it) }
         ) { Tunables.manualKissThrowAngleDeg = it; AutoAimPrefs.setManualKissThrowAngleDeg(it) }
         hint("The collision math itself (0.95 elasticity) is now solved exactly from the game's real physics data. This just mops up what isn't modeled — spin-driven throw and any leftover engine/calibration slop — so it should need only small nudges.")
 

@@ -20,6 +20,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import kotlin.math.abs
+import java.util.Locale
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
@@ -113,6 +114,20 @@ object OverlayController {
     // panel) is identical either way, since none of it depends on capture.
     @Volatile var captureless: Boolean = false
         private set
+
+    // Whether a real capture session is currently backing this overlay —
+    // distinct from captureless (fixed at attach time). Flips false when
+    // CaptureService kills MediaProjection/VirtualDisplay/ImageReader (see
+    // Hide-stops-capture below), so Show doesn't resurrect dead auto-detect
+    // UI (Ray Circle, Ray Monitor) for a capture pipeline that no longer
+    // exists.
+    @Volatile var captureAlive: Boolean = false
+        private set
+
+    fun setCaptureAlive(alive: Boolean) {
+        captureAlive = alive
+        applyHandleVisibility()
+    }
 
     // --- Candidate lock (anti-blink, but switches fast on big angle change) ---
     private var lockedResult: DetectionResult? = null
@@ -231,6 +246,7 @@ object OverlayController {
     fun attach(svc: Service, captureless: Boolean = false) {
         service = svc
         OverlayController.captureless = captureless
+        captureAlive = !captureless
         val wm = svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
 
@@ -248,17 +264,15 @@ object OverlayController {
             WindowManager.LayoutParams.MATCH_PARENT,
             OVERLAY_TYPE,
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT
         ).apply { applyFullScreenFlags() }
         wm.addView(dView, drawParams)
 
         // Manual Only mode: no capture pipeline is running, so the Ray
-        // Circle drag-handle has nothing to detect against — leave it
-        // uncreated instead of showing a dead, draggable control.
-        if (!captureless) {
-            attachCircleHandle(svc, wm)
-        }
+        // Circle drag-handle has nothing to detect against — applyHandleVisibility
+        // below only creates it when !captureless (and aimVisible/captureAlive hold).
         applyHandleVisibility()
         buildPanel(svc, wm)
 
@@ -275,7 +289,8 @@ object OverlayController {
             diam,
             diam,
             OVERLAY_TYPE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -382,7 +397,8 @@ object OverlayController {
             panelWidth,
             PANEL_HEIGHT_PX,
             OVERLAY_TYPE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -411,48 +427,47 @@ object OverlayController {
 
         panelView = panel
         wm.addView(panel, pParams)
-        applyPanelVisibility(panel, pParams)
+        applyPanelVisibility()
     }
 
-    /** Bug #1: Hide must conceal the draggable Ray Circle controller too,
-     * not just the canvas-drawn aim line. Same VISIBLE/INVISIBLE +
-     * FLAG_NOT_TOUCHABLE pattern as [applyPanelVisibility], so a hidden
-     * controller also stops swallowing drags. Also hides the manual
-     * CUE/TARGET handles (if attached) the same way, so the global
-     * Hide/Show notification action is a single master switch for every
-     * draggable overlay, not just the automatic ones. */
+    /** Hide now tears the handle windows down instead of just marking them
+     * INVISIBLE — an invisible SYSTEM_ALERT_WINDOW is still a live surface
+     * the compositor blends every frame, so the old approach cost the same
+     * either way. Show rebuilds whatever should exist: the circle handle
+     * only if this session ever had a live capture pipeline (captureAlive),
+     * the manual handles only if the controller is enabled. */
     private fun applyHandleVisibility() {
-        // Circle handle doesn't exist in captureless (Manual Only) mode —
-        // guard just this block instead of early-returning the whole
-        // function, so the manual-handle toggles below still run.
         val wm = windowManager
-        val hView = handleView
-        val params = handleParams
-        if (wm != null && hView != null && params != null) {
-            if (Tunables.aimVisible) {
-                hView.visibility = View.VISIBLE
-                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-            } else {
-                hView.visibility = View.INVISIBLE
-                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        if (Tunables.aimVisible) {
+            val svc = service
+            if (svc != null && wm != null) {
+                if (!captureless && captureAlive && handleView == null) {
+                    attachCircleHandle(svc, wm)
+                }
+                if (Tunables.manualControllerEnabled && manualCueHandle == null) {
+                    attachManualHandles()
+                }
             }
-            runCatching { wm.updateViewLayout(hView, params) }
+        } else {
+            handleView?.let { v -> wm?.let { runCatching { it.removeView(v) } } }
+            handleView = null
+            handleParams = null
+            detachManualHandles()
         }
-        manualCueHandle?.setHidden(!Tunables.aimVisible)
-        manualTargetHandle?.setHidden(!Tunables.aimVisible)
-        manualDestHandle?.setHidden(!Tunables.aimVisible)
     }
 
-    private fun applyPanelVisibility(panel: View, params: WindowManager.LayoutParams) {
-        val wm = windowManager ?: return
+    private fun applyPanelVisibility() {
+        val wm = windowManager
+        val svc = service
         if (Tunables.tweakPanelVisible) {
-            panel.visibility = View.VISIBLE
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            if (svc != null && wm != null && panelView == null) {
+                buildPanel(svc, wm)
+            }
         } else {
-            panel.visibility = View.INVISIBLE
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            panelView?.let { v -> wm?.let { runCatching { it.removeView(v) } } }
+            panelView = null
+            panelParams = null
         }
-        runCatching { wm.updateViewLayout(panel, params) }
     }
 
     // ---------------- Notification-driven toggles ----------------
@@ -478,11 +493,7 @@ object OverlayController {
     fun toggleTweakPanelVisible() {
         Tunables.tweakPanelVisible = !Tunables.tweakPanelVisible
         AutoAimPrefs.setTweakPanelVisible(Tunables.tweakPanelVisible)
-        val panel = panelView
-        val params = panelParams
-        if (panel != null && params != null) {
-            applyPanelVisibility(panel, params)
-        }
+        applyPanelVisibility()
     }
 
     // ---------------- Table calibration ----------------
@@ -805,6 +816,7 @@ object OverlayController {
         calibrationMode = false
         lockedResult = null
         lockHoldFrames = 0
+        captureAlive = false
     }
 }
 
@@ -828,7 +840,8 @@ private class EdgeHandle(
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
         PixelFormat.TRANSLUCENT
     )
 
@@ -926,7 +939,8 @@ private class EdgeDPad(
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
         PixelFormat.TRANSLUCENT
     )
 
@@ -1075,7 +1089,8 @@ private class ManualHandle(
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
         PixelFormat.TRANSLUCENT
     )
 
@@ -1239,16 +1254,6 @@ private class ManualHandle(
         view.invalidate()
     }
 
-    fun setHidden(hidden: Boolean) {
-        view.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
-        params.flags = if (hidden) {
-            params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        } else {
-            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-        }
-        runCatching { wm.updateViewLayout(view, params) }
-    }
-
     fun remove() {
         runCatching { wm.removeView(view) }
     }
@@ -1355,6 +1360,11 @@ class DrawOverlayView(context: Context) : View(context) {
         isFilterBitmap = true
     }
     private val monitorMatrix = Matrix()
+    private var previewBitmap: Bitmap? = null
+    private var previewShader: BitmapShader? = null
+    private var previewSide: Int = -1
+    private val clipPieceA = FloatArray(4)
+    private val clipPieceB = FloatArray(4)
     private val textPaint = Paint().apply {
         color = Color.GREEN
         textSize = 32f
@@ -1474,7 +1484,7 @@ class DrawOverlayView(context: Context) : View(context) {
         // OverlayController.attach). Falls through to drawManualController
         // below either way — that's independent of capture entirely.
         val result = OverlayController.lastResult
-        if (!OverlayController.captureless) {
+        if (!OverlayController.captureless && OverlayController.captureAlive) {
             circlePaint.alpha = Tunables.circleAlpha
             canvas.drawCircle(cx, cy, half, circlePaint)
 
@@ -1488,7 +1498,14 @@ class DrawOverlayView(context: Context) : View(context) {
                 val n = result.previewArgb.size
                 val side = kotlin.math.sqrt(n.toDouble()).toInt()
                 if (side * side == n && side > 0) {
-                    val bmp = Bitmap.createBitmap(result.previewArgb, side, side, Bitmap.Config.ARGB_8888)
+                    if (previewBitmap == null || previewSide != side) {
+                        val bmp = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
+                        previewBitmap = bmp
+                        previewSide = side
+                        previewShader = BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+                    }
+                    previewBitmap!!.setPixels(result.previewArgb, 0, side, 0, 0, side, side)
+
                     val disp = Tunables.circleDiameter.toFloat().coerceAtLeast(1f)
                     val radius = disp / 2f
                     val previewCx = 20f + radius
@@ -1500,9 +1517,8 @@ class DrawOverlayView(context: Context) : View(context) {
                     monitorMatrix.reset()
                     monitorMatrix.setScale(scale, scale)
                     monitorMatrix.postTranslate(previewCx - radius, previewCy - radius)
-                    monitorCirclePaint.shader = BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
-                        setLocalMatrix(monitorMatrix)
-                    }
+                    previewShader!!.setLocalMatrix(monitorMatrix)
+                    monitorCirclePaint.shader = previewShader
                     canvas.drawCircle(previewCx, previewCy, radius, monitorCirclePaint)
                     monitorCirclePaint.shader = null
                 }
@@ -1511,7 +1527,7 @@ class DrawOverlayView(context: Context) : View(context) {
             if (result != null && result.hasLine) {
                 val deg = Math.toDegrees(result.angleRad)
                 canvas.drawText(
-                    "angle=%.1f  px=%d  w=%.1f  score=%.1f".format(
+                    "angle=%.1f  px=%d  w=%.1f  score=%.1f".format(Locale.US, 
                         deg, result.pixelCount, result.widthPx, result.score
                     ),
                     24f, 60f, textPaint
@@ -1527,6 +1543,7 @@ class DrawOverlayView(context: Context) : View(context) {
         // points, not derived from `result` at all.
         drawManualController(canvas)
 
+        if (OverlayController.captureless || !OverlayController.captureAlive) return
         if (result == null || !result.hasLine) return
 
         val alphaScale = Tunables.autoAimOpacity / 255f
@@ -1650,12 +1667,12 @@ class DrawOverlayView(context: Context) : View(context) {
                 val halfWidth = Tunables.doubleLineWidthPx / 2f
                 val px = -dy * halfWidth
                 val py = dx * halfWidth
-                for (piece in clipOutsideRayZone(curX + px, curY + py, endX + px, endY + py, zoneCx, zoneCy, zoneR)) {
-                    canvas.drawLine(piece[0], piece[1], piece[2], piece[3], segDouble)
-                }
-                for (piece in clipOutsideRayZone(curX - px, curY - py, endX - px, endY - py, zoneCx, zoneCy, zoneR)) {
-                    canvas.drawLine(piece[0], piece[1], piece[2], piece[3], segDouble)
-                }
+                var cnt = clipOutsideRayZone(curX + px, curY + py, endX + px, endY + py, zoneCx, zoneCy, zoneR)
+                if (cnt >= 1) canvas.drawLine(clipPieceA[0], clipPieceA[1], clipPieceA[2], clipPieceA[3], segDouble)
+                if (cnt >= 2) canvas.drawLine(clipPieceB[0], clipPieceB[1], clipPieceB[2], clipPieceB[3], segDouble)
+                cnt = clipOutsideRayZone(curX - px, curY - py, endX - px, endY - py, zoneCx, zoneCy, zoneR)
+                if (cnt >= 1) canvas.drawLine(clipPieceA[0], clipPieceA[1], clipPieceA[2], clipPieceA[3], segDouble)
+                if (cnt >= 2) canvas.drawLine(clipPieceB[0], clipPieceB[1], clipPieceB[2], clipPieceB[3], segDouble)
             }
 
             remaining -= tDraw
@@ -1695,53 +1712,70 @@ class DrawOverlayView(context: Context) : View(context) {
         canvas: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, paint: Paint,
         zoneCx: Float, zoneCy: Float, zoneR: Float
     ) {
-        for (piece in clipOutsideRayZone(x1, y1, x2, y2, zoneCx, zoneCy, zoneR)) {
-            drawSegLine(canvas, piece[0], piece[1], piece[2], piece[3], paint)
-        }
+        val cnt = clipOutsideRayZone(x1, y1, x2, y2, zoneCx, zoneCy, zoneR)
+        if (cnt >= 1) drawSegLine(canvas, clipPieceA[0], clipPieceA[1], clipPieceA[2], clipPieceA[3], paint)
+        if (cnt >= 2) drawSegLine(canvas, clipPieceB[0], clipPieceB[1], clipPieceB[2], clipPieceB[3], paint)
     }
 
     /**
      * Splits the segment [x1,y1]-[x2,y2] into the piece(s) that lie outside
      * the circular Ray Zone (center zoneCx/zoneCy, radius zoneR), dropping
-     * whatever portion would fall inside it. Returns an empty list if the
-     * whole segment is inside, the segment unchanged (as a single piece) if
-     * it never touches the zone, or two pieces if it passes all the way
-     * through (entry side + exit side). This is the one unified rule bug #5
-     * asks for — every caller (main line, bank-reflected lines, doubles)
+     * whatever portion would fall inside it. Writes into clipPieceA (and
+     * clipPieceB if there's a second piece) and returns the piece count
+     * (0, 1, or 2) instead of allocating — this runs up to a few dozen
+     * times per onDraw, so it's a real GC-pressure source at capture
+     * frame rate. Every caller (main line, bank-reflected lines, doubles)
      * routes through here, so nothing needs its own zone-avoidance logic.
      */
     private fun clipOutsideRayZone(
         x1: Float, y1: Float, x2: Float, y2: Float,
         zoneCx: Float, zoneCy: Float, zoneR: Float
-    ): List<FloatArray> {
+    ): Int {
         val dx = x2 - x1
         val dy = y2 - y1
         val fx = x1 - zoneCx
         val fy = y1 - zoneCy
         val a = dx * dx + dy * dy
         if (a < 1e-6f) {
-            return if (hypot(fx, fy) >= zoneR) listOf(floatArrayOf(x1, y1, x2, y2)) else emptyList()
+            if (hypot(fx, fy) < zoneR) return 0
+            clipPieceA[0] = x1; clipPieceA[1] = y1; clipPieceA[2] = x2; clipPieceA[3] = y2
+            return 1
         }
 
         val b = 2f * (fx * dx + fy * dy)
         val c = fx * fx + fy * fy - zoneR * zoneR
         val disc = b * b - 4f * a * c
-        if (disc < 0f) return listOf(floatArrayOf(x1, y1, x2, y2))
+        if (disc < 0f) {
+            clipPieceA[0] = x1; clipPieceA[1] = y1; clipPieceA[2] = x2; clipPieceA[3] = y2
+            return 1
+        }
 
         val sqrtDisc = kotlin.math.sqrt(disc)
         val rawT1 = (-b - sqrtDisc) / (2f * a)
         val rawT2 = (-b + sqrtDisc) / (2f * a)
         // Intersection interval doesn't overlap [0,1] at all -> the circle
         // doesn't actually clip this bounded segment; keep it whole.
-        if (rawT2 < 0f || rawT1 > 1f) return listOf(floatArrayOf(x1, y1, x2, y2))
+        if (rawT2 < 0f || rawT1 > 1f) {
+            clipPieceA[0] = x1; clipPieceA[1] = y1; clipPieceA[2] = x2; clipPieceA[3] = y2
+            return 1
+        }
 
         val tLo = rawT1.coerceIn(0f, 1f)
         val tHi = rawT2.coerceIn(0f, 1f)
 
-        val pieces = ArrayList<FloatArray>(2)
-        if (tLo > 0.0001f) pieces.add(floatArrayOf(x1, y1, x1 + dx * tLo, y1 + dy * tLo))
-        if (tHi < 0.9999f) pieces.add(floatArrayOf(x1 + dx * tHi, y1 + dy * tHi, x2, y2))
-        return pieces
+        var count = 0
+        if (tLo > 0.0001f) {
+            clipPieceA[0] = x1; clipPieceA[1] = y1
+            clipPieceA[2] = x1 + dx * tLo; clipPieceA[3] = y1 + dy * tLo
+            count++
+        }
+        if (tHi < 0.9999f) {
+            val piece = if (count == 0) clipPieceA else clipPieceB
+            piece[0] = x1 + dx * tHi; piece[1] = y1 + dy * tHi
+            piece[2] = x2; piece[3] = y2
+            count++
+        }
+        return count
     }
 
     private fun drawSegLine(canvas: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, paint: Paint) {

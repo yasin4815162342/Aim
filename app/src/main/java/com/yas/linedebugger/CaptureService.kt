@@ -78,6 +78,9 @@ class CaptureService : Service() {
             // Capture died. Keep overlays alive. Only release projection resources.
             releaseCaptureResources()
             isCapturing = false
+            OverlayController.lastResult = null
+            OverlayController.setCaptureAlive(false)
+            refreshNotification()
             // Do NOT stopSelf() — user wants tweaks permanent until explicit Stop.
         }
     }
@@ -116,6 +119,15 @@ class CaptureService : Service() {
             }
             ACTION_TOGGLE_VISIBILITY -> {
                 OverlayController.toggleAimVisible()
+                if (!OverlayController.isAimVisible() && isCapturing) {
+                    // Hide means full stop for the capture side too — not
+                    // just hiding the drawn lines while the recording (and
+                    // its frame-processing pipeline) quietly keeps running.
+                    releaseCaptureResources()
+                    isCapturing = false
+                    OverlayController.lastResult = null
+                    OverlayController.setCaptureAlive(false)
+                }
                 refreshNotification()
                 return START_STICKY
             }
@@ -273,6 +285,8 @@ class CaptureService : Service() {
         }, bgHandler)
 
         isCapturing = true
+        OverlayController.setCaptureAlive(true)
+        refreshNotification()
         return START_STICKY
     }
 
@@ -367,10 +381,10 @@ class CaptureService : Service() {
     private fun buildNotification(): Notification {
         val visibilityLabel = if (OverlayController.isAimVisible()) "Hide" else "Show"
         val tweaksLabel = if (OverlayController.isTweakPanelVisible()) "Tweaks: Hide" else "Tweaks: Show"
-        val contentText = if (isManualOnly) {
-            "Manual overlay running — no screen capture"
-        } else {
-            "Capturing screen for guideline detection"
+        val contentText = when {
+            isManualOnly -> "Manual overlay running — no screen capture"
+            isCapturing -> "Capturing screen for guideline detection"
+            else -> "Capture stopped (hidden) — Start again from the app to resume"
         }
 
         val stopAction = Notification.Action.Builder(

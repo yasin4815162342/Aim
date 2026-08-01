@@ -9,6 +9,7 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import java.util.Locale
 
 /**
  * Builds the full set of tweak controls exactly once, so the in-app
@@ -194,7 +195,7 @@ object SettingsPanelBuilder {
         }
         floatSlider(
             "Outlier trim K", AutoAimPrefs.OUTLIER_TRIM_K_MIN, AutoAimPrefs.OUTLIER_TRIM_K_MAX,
-            Tunables.outlierTrimK, 55, { "%.1f".format(it) }
+            Tunables.outlierTrimK, 55, { "%.1f".format(Locale.US, it) }
         ) { Tunables.outlierTrimK = it; AutoAimPrefs.setOutlierTrimK(it) }
 
         // ==================== Detection: color strategy (bug #2) ====================
@@ -229,10 +230,10 @@ object SettingsPanelBuilder {
         sectionLabel("Felt Color Reference (HSV mode)")
         hint("A pixel close to this hue AND saturation AND value is felt and gets discarded. Differing enough in hue, OR in saturation, OR in brightness alone is enough to survive as a candidate — that's what lets a green guideline through even though its hue matches the felt's.")
         floatSlider(
-            "Felt hue", 0f, 360f, Tunables.feltHueDeg, 360, { "%.0f°".format(it) }
+            "Felt hue", 0f, 360f, Tunables.feltHueDeg, 360, { "%.0f°".format(Locale.US, it) }
         ) { Tunables.feltHueDeg = it; AutoAimPrefs.setFeltHueDeg(it) }
         floatSlider(
-            "Felt hue tolerance", 0f, 180f, Tunables.feltHueToleranceDeg, 180, { "%.0f°".format(it) }
+            "Felt hue tolerance", 0f, 180f, Tunables.feltHueToleranceDeg, 180, { "%.0f°".format(Locale.US, it) }
         ) { Tunables.feltHueToleranceDeg = it; AutoAimPrefs.setFeltHueToleranceDeg(it) }
         intSlider("Felt saturation", 0, 255, Tunables.feltSat) {
             Tunables.feltSat = it; AutoAimPrefs.setFeltSat(it)
@@ -253,10 +254,10 @@ object SettingsPanelBuilder {
             Tunables.railExclusionEnabled = it; AutoAimPrefs.setRailExclusionEnabled(it)
         }
         floatSlider(
-            "Rail hue", 0f, 360f, Tunables.railHueDeg, 360, { "%.0f°".format(it) }
+            "Rail hue", 0f, 360f, Tunables.railHueDeg, 360, { "%.0f°".format(Locale.US, it) }
         ) { Tunables.railHueDeg = it; AutoAimPrefs.setRailHueDeg(it) }
         floatSlider(
-            "Rail hue tolerance", 0f, 180f, Tunables.railHueToleranceDeg, 180, { "%.0f°".format(it) }
+            "Rail hue tolerance", 0f, 180f, Tunables.railHueToleranceDeg, 180, { "%.0f°".format(Locale.US, it) }
         ) { Tunables.railHueToleranceDeg = it; AutoAimPrefs.setRailHueToleranceDeg(it) }
         intSlider("Rail saturation", 0, 255, Tunables.railSat) {
             Tunables.railSat = it; AutoAimPrefs.setRailSat(it)
@@ -283,7 +284,7 @@ object SettingsPanelBuilder {
         }
         floatSlider(
             "Capture scale", AutoAimPrefs.CAPTURE_SCALE_MIN, AutoAimPrefs.CAPTURE_SCALE_MAX,
-            Tunables.captureScale, 60, { "%.2fx".format(it) }
+            Tunables.captureScale, 60, { "%.2fx".format(Locale.US, it) }
         ) { Tunables.captureScale = it; AutoAimPrefs.setCaptureScale(it) }
         hint("1.00x = native resolution, zero resolution-driven position error, but the heaviest render cost. Lower it if fps/battery/heat suffer on your device. Takes effect on the next Stop → Start of capture, not live.")
 
@@ -292,7 +293,7 @@ object SettingsPanelBuilder {
         hint("Width / opacity / color are manual now — no longer set from the detected ball.")
         floatSlider(
             "Line width", AutoAimPrefs.AUTO_AIM_WIDTH_MIN_PX, AutoAimPrefs.AUTO_AIM_WIDTH_MAX_PX,
-            Tunables.autoAimWidthPx, 90, { "%.1f px".format(it) }
+            Tunables.autoAimWidthPx, 90, { "%.1f px".format(Locale.US, it) }
         ) { Tunables.autoAimWidthPx = it; AutoAimPrefs.setAutoAimWidthPx(it) }
         intSlider("Line opacity", AutoAimPrefs.AUTO_AIM_OPACITY_MIN, AutoAimPrefs.AUTO_AIM_OPACITY_MAX, Tunables.autoAimOpacity) {
             Tunables.autoAimOpacity = it; AutoAimPrefs.setAutoAimOpacity(it)
@@ -325,7 +326,7 @@ object SettingsPanelBuilder {
         }
         val (ghostBallLabel, ghostBallSeek) = floatSlider(
             "Ghost ball size", AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX, AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX,
-            Tunables.ghostBallDiameterPx, 100, { "%.0f px".format(it) }
+            Tunables.ghostBallDiameterPx, 100, { "%.0f px".format(Locale.US, it) }
         ) {
             Tunables.ghostBallDiameterPx = it
             AutoAimPrefs.setGhostBallDiameterPx(it)
@@ -339,13 +340,13 @@ object SettingsPanelBuilder {
                 val applied = OverlayController.matchBallSizeToCalibration()
                 if (applied) {
                     val v = Tunables.ghostBallDiameterPx
-                    ghostBallLabel.text = "Ghost ball size: %.0f px".format(v)
+                    ghostBallLabel.text = "Ghost ball size: %.0f px".format(Locale.US, v)
                     val steps = ghostBallSeek.max
                     ghostBallSeek.progress = Math.round(
                         (v - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) /
                             (AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) * steps
                     ).coerceIn(0, steps)
-                    Toast.makeText(context, "Ball size set to %.0f px from table calibration".format(v), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Ball size set to %.0f px from table calibration".format(Locale.US, v), Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(context, "Calibrate the table first", Toast.LENGTH_SHORT).show()
                 }
@@ -358,7 +359,7 @@ object SettingsPanelBuilder {
         hint("No ball-size baseline here, so this is an absolute width — wide range on purpose.")
         floatSlider(
             "Double line width", AutoAimPrefs.DOUBLE_LINE_WIDTH_MIN_PX, AutoAimPrefs.DOUBLE_LINE_WIDTH_MAX_PX,
-            Tunables.doubleLineWidthPx, 200, { "%.0f px".format(it) }
+            Tunables.doubleLineWidthPx, 200, { "%.0f px".format(Locale.US, it) }
         ) { Tunables.doubleLineWidthPx = it; AutoAimPrefs.setDoubleLineWidthPx(it) }
         checkbox("Dashed line", Tunables.dashedLineEnabled) {
             Tunables.dashedLineEnabled = it; AutoAimPrefs.setDashedLineEnabled(it)
@@ -376,7 +377,7 @@ object SettingsPanelBuilder {
             val angleLabel = AutoAimPrefs.BANK_ANGLES[i].toInt()
             correctionSlider(
                 "Correction @ ${angleLabel}°", AutoAimPrefs.BANK_CORRECTION_MIN, AutoAimPrefs.BANK_CORRECTION_MAX,
-                AutoAimPrefs.getBankCorrection(idx), bankSteps, bankStepSize, { "%.1f°".format(it) }
+                AutoAimPrefs.getBankCorrection(idx), bankSteps, bankStepSize, { "%.1f°".format(Locale.US, it) }
             ) { v ->
                 AutoAimPrefs.setBankCorrection(idx, v)
                 AutoAimPrefs.pushBankCurve()
