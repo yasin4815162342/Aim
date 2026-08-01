@@ -20,6 +20,9 @@ import java.util.Locale
  * [onChanged] is called after every user edit so the caller can trigger a
  * redraw of the live overlay (a no-op if it isn't running yet).
  * [onCalibrate], if non-null, adds a "Calibrate Table" button.
+ * [onSemiAutoCalibrate], if non-null, adds a "Semi-Auto Calibrate (center
+ * only)" button — re-centers the table using the size template captured
+ * by the last full manual calibration, instead of dragging both corners.
  */
 object SettingsPanelBuilder {
 
@@ -30,7 +33,7 @@ object SettingsPanelBuilder {
         else -> "unknown"
     }
 
-    fun build(context: Context, onChanged: () -> Unit, onCalibrate: (() -> Unit)?): LinearLayout {
+    fun build(context: Context, onChanged: () -> Unit, onCalibrate: (() -> Unit)?, onSemiAutoCalibrate: (() -> Unit)? = null): LinearLayout {
         val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         val density = context.resources.displayMetrics.density
 
@@ -324,7 +327,7 @@ object SettingsPanelBuilder {
         intSlider("Max lines (total segments)", AutoAimPrefs.MAX_LINES_MIN, AutoAimPrefs.MAX_LINES_MAX, Tunables.maxLines) {
             Tunables.maxLines = it; AutoAimPrefs.setMaxLines(it)
         }
-        val (ghostBallLabel, ghostBallSeek) = floatSlider(
+        floatSlider(
             "Ghost ball size", AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX, AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX,
             Tunables.ghostBallDiameterPx, 100, { "%.0f px".format(Locale.US, it) }
         ) {
@@ -333,26 +336,6 @@ object SettingsPanelBuilder {
             OverlayController.onGhostBallDiameterChanged(it)
         }
         hint("Bug #3 fix: also insets the wall so a bank reflects off the ball's center, not the table edge. Shared by the automatic ray and the manual CUE/TARGET balls — see the Manual Controller section in the main app screen.")
-        hint("Bug #2 fix: auto-set from the reference game's real ball/table proportions every time you calibrate the table, since a fixed px number can't be right on every device/table size. Tweak the slider above only to fine-tune further; use the button below to reapply the calibrated value without recalibrating.")
-        root.addView(Button(context).apply {
-            text = "Match ball size to table calibration"
-            setOnClickListener {
-                val applied = OverlayController.matchBallSizeToCalibration()
-                if (applied) {
-                    val v = Tunables.ghostBallDiameterPx
-                    ghostBallLabel.text = "Ghost ball size: %.0f px".format(Locale.US, v)
-                    val steps = ghostBallSeek.max
-                    ghostBallSeek.progress = Math.round(
-                        (v - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) /
-                            (AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) * steps
-                    ).coerceIn(0, steps)
-                    Toast.makeText(context, "Ball size set to %.0f px from table calibration".format(Locale.US, v), Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Calibrate the table first", Toast.LENGTH_SHORT).show()
-                }
-                onChanged()
-            }
-        })
         checkbox("Double line", Tunables.doubleLineEnabled) {
             Tunables.doubleLineEnabled = it; AutoAimPrefs.setDoubleLineEnabled(it)
         }
@@ -395,6 +378,15 @@ object SettingsPanelBuilder {
                 text = "Calibrate Table"
                 setOnClickListener { onCalibrate() }
             })
+            hint("Drag both corners onto the rails, fine-tune with the D-Pads (1px/tap). This also sets the table size used by Semi-Auto Calibrate below.")
+        }
+
+        if (onSemiAutoCalibrate != null) {
+            root.addView(Button(context).apply {
+                text = "Semi-Auto Calibrate (center only)"
+                setOnClickListener { onSemiAutoCalibrate() }
+            })
+            hint("Re-centers the table using the size from your last full Calibrate Table pass — place one crosshair on the table's exact center instead of both corners. Run Calibrate Table at least once first.")
         }
 
         // Force-push the bank curve every time the panel is built so the

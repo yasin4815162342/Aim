@@ -117,7 +117,7 @@ object ManualControlPanelBuilder {
             Tunables.manualSensitivity, 140, { "%.2fx".format(Locale.US, it) }
         ) { Tunables.manualSensitivity = it; AutoAimPrefs.setManualSensitivity(it) }
 
-        val (ballSizeLabel, ballSizeSeek) = floatSlider(
+        floatSlider(
             "Ball size (shared with Bank Shot section in the floating panel)",
             AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX, AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX,
             Tunables.ghostBallDiameterPx, 100, { "%.0f px".format(Locale.US, it) }
@@ -127,26 +127,6 @@ object ManualControlPanelBuilder {
             OverlayController.onGhostBallDiameterChanged(it)
         }
         hint("Same ball diameter the automatic ray's rail bounce uses (bug #3) — kept as one shared value since it's the same physical ball either way.")
-        hint("Bug #2 fix: auto-set from the reference game's real ball/table proportions whenever you calibrate the table (Calibrate Table button is in the floating panel). Button below reapplies that without recalibrating.")
-        root.addView(Button(context).apply {
-            text = "Match ball size to table calibration"
-            setOnClickListener {
-                val applied = OverlayController.matchBallSizeToCalibration()
-                if (applied) {
-                    val v = Tunables.ghostBallDiameterPx
-                    ballSizeLabel.text = "Ball size (shared with Bank Shot section in the floating panel): %.0f px".format(Locale.US, v)
-                    val steps = ballSizeSeek.max
-                    ballSizeSeek.progress = Math.round(
-                        (v - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) /
-                            (AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX - AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX) * steps
-                    ).coerceIn(0, steps)
-                    Toast.makeText(context, "Ball size set to %.0f px from table calibration".format(Locale.US, v), Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Calibrate the table first (floating panel, while running)", Toast.LENGTH_SHORT).show()
-                }
-                onChanged()
-            }
-        })
 
         sectionLabel("Manual Line Look")
         floatSlider(

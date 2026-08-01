@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PixelFormat
@@ -19,6 +20,7 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import kotlin.math.abs
 import java.util.Locale
 import kotlin.math.cos
@@ -79,25 +81,6 @@ private const val RAY_ZONE_EXCLUSION_FACTOR = 1.20f
 // doesn't eat the whole screen while still showing several sliders.
 private const val PANEL_HEIGHT_PX = 520
 
-// Bug #2 fix (ghost ball size/roundness): sourced directly from the
-// reference Chipmunk pool engine's PoolPhysics.js, since the app is
-// mimicking that engine's table exactly.
-//   ball_radius: 20  → PHYSICS_BALL_DIAMETER = 40 (matches this app's old
-//     fixed default — that was never a coincidence, it's where 40 came
-//     from — but it's only correct at a 1:1 physics-unit-to-screen-pixel
-//     scale, which real devices essentially never render at).
-//   end_rail cushions at x=±681 → long-axis playing surface = 1362 units.
-//   side_rail cushions at y=±341 → short-axis playing surface = 682 units.
-// The playing surface is what the table-calibration corners are dragged
-// onto (the visible rail/cushion line), so once calibrated we know the
-// on-screen pixels-per-physics-unit scale exactly and can derive the
-// ball's true on-screen diameter with no guesswork — same uniform scale
-// the reference engine itself applies (PhysicsSprite._setX/_setY use one
-// scalar for both axes), so a correctly-derived ghost ball is always a
-// perfect circle, same as the real balls.
-private const val PHYSICS_BALL_DIAMETER = 40f
-private const val PHYSICS_TABLE_LENGTH = 1362f
-private const val PHYSICS_TABLE_WIDTH = 682f
 
 object OverlayController {
 
@@ -209,6 +192,19 @@ object OverlayController {
     private var edgeBHandle: EdgeHandle? = null
     private var edgeADPad: EdgeDPad? = null
     private var edgeBDPad: EdgeDPad? = null
+
+    // --- Semi-automatic table calibration state ---
+    // Builds on the manual (2-corner) calibration above: every full
+    // manual calibration also captures its width/height as a "template"
+    // (Tunables.tableTemplateWidth/Height, see saveCalibrationAndRemoveHandles).
+    // A real table's rails are rigid, so once that size is known, semi-auto
+    // mode only needs the table's center pixel — one crosshair, one D-Pad —
+    // and reconstructs all four rail edges from center +/- template/2.
+    @Volatile var semiAutoCalibrationMode: Boolean = false
+    @Volatile var semiCenterX: Float = 0f
+    @Volatile var semiCenterY: Float = 0f
+    private var semiCenterHandle: EdgeHandle? = null
+    private var semiCenterDPad: EdgeDPad? = null
 
     // --- Manual CUE / TARGET controller state (feature request #1) ---
     // Live positions only — never persisted, exactly like the Manual
@@ -370,7 +366,8 @@ object OverlayController {
         val settings = SettingsPanelBuilder.build(
             service,
             onChanged = { drawView?.invalidate() },
-            onCalibrate = { toggleCalibrationMode() }
+            onCalibrate = { toggleCalibrationMode() },
+            onSemiAutoCalibrate = { toggleSemiAutoCalibrationMode() }
         )
         scroll.addView(settings)
         panel.addView(scroll)
@@ -499,6 +496,10 @@ object OverlayController {
     // ---------------- Table calibration ----------------
 
     fun toggleCalibrationMode() {
+        if (!calibrationMode && semiAutoCalibrationMode) {
+            service?.let { Toast.makeText(it, "Finish or cancel Semi-Auto Calibrate first.", Toast.LENGTH_SHORT).show() }
+            return
+        }
         calibrationMode = !calibrationMode
         if (calibrationMode) {
             startCalibrationHandles()
@@ -546,53 +547,92 @@ object OverlayController {
         Tunables.tableRight = right
         Tunables.tableBottom = bottom
 
+        // Capture this calibration's exact size as the semi-auto template.
+        // A real table's rails don't change shape shot to shot, so this
+        // width/height stays valid until the next full manual calibration
+        // overwrites it (e.g. after a resolution or layout change).
+        val width = right - left
+        val height = bottom - top
+        AutoAimPrefs.saveTableTemplate(width, height)
+        Tunables.tableTemplateWidth = width
+        Tunables.tableTemplateHeight = height
+
         edgeAHandle?.remove(); edgeAHandle = null
         edgeBHandle?.remove(); edgeBHandle = null
         edgeADPad?.remove(); edgeADPad = null
         edgeBDPad?.remove(); edgeBDPad = null
-
-        // Bug #2 fix: re-derive ghost ball size from the calibration we
-        // just saved, so it's correct for this table/device without the
-        // user having to eyeball the slider.
-        matchBallSizeToCalibration()
     }
 
-    /**
-     * Bug #2 fix: derives the correct on-screen ghost-ball diameter from
-     * the CURRENTLY SAVED table calibration (Tunables.tableLeft/Top/Right/
-     * Bottom) and the reference engine's known ball/table proportions (see
-     * the PHYSICS_* constants above), then applies + persists it. Returns
-     * false (does nothing) if the table hasn't been calibrated yet.
-     *
-     * Called automatically right after every calibration save, and also
-     * reachable on demand from the "Match ball size to table calibration"
-     * button in the settings panel — e.g. to reapply after manually
-     * fiddling with the slider, without redoing the whole calibration.
-     *
-     * Averages the scale computed from both table axes (long ÷ 1362,
-     * short ÷ 682) rather than just one, so a slightly-off calibration
-     * splits its error across both instead of the ball size fully
-     * inheriting whichever axis you happened to calibrate less carefully.
-     */
-    fun matchBallSizeToCalibration(): Boolean {
-        if (Tunables.tableLeft < 0f) return false
-        val calWidthPx = Tunables.tableRight - Tunables.tableLeft
-        val calHeightPx = Tunables.tableBottom - Tunables.tableTop
-        if (calWidthPx <= 0f || calHeightPx <= 0f) return false
+    // ---------------- Semi-automatic table calibration ----------------
+    // Re-uses the template captured above: instead of dragging two
+    // corners, the user places one crosshair on the table's exact center
+    // pixel (drag + the same 1px-per-tap D-Pad as manual mode), and the
+    // four rail edges are reconstructed as center +/- template/2. One
+    // point to place instead of two corners means less room for
+    // cumulative human error, so it lands as pixel-perfect as the manual
+    // pass it was templated from.
 
-        val longPx = maxOf(calWidthPx, calHeightPx)
-        val shortPx = minOf(calWidthPx, calHeightPx)
-        val scaleFromLength = longPx / PHYSICS_TABLE_LENGTH
-        val scaleFromWidth = shortPx / PHYSICS_TABLE_WIDTH
-        val scale = (scaleFromLength + scaleFromWidth) / 2f
+    fun toggleSemiAutoCalibrationMode() {
+        if (!semiAutoCalibrationMode) {
+            if (calibrationMode) {
+                service?.let { Toast.makeText(it, "Finish or cancel Calibrate Table first.", Toast.LENGTH_SHORT).show() }
+                return
+            }
+            if (!AutoAimPrefs.hasTableTemplate()) {
+                service?.let {
+                    Toast.makeText(
+                        it,
+                        "Run \"Calibrate Table\" (both corners) once first — Semi-Auto needs a known table size to work from.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                return
+            }
+            semiAutoCalibrationMode = true
+            startSemiAutoCalibrationHandles()
+        } else {
+            semiAutoCalibrationMode = false
+            saveSemiAutoCalibrationAndRemoveHandles()
+        }
+        drawView?.invalidate()
+    }
 
-        val diameter = (PHYSICS_BALL_DIAMETER * scale).coerceIn(
-            AutoAimPrefs.GHOST_BALL_DIAMETER_MIN_PX, AutoAimPrefs.GHOST_BALL_DIAMETER_MAX_PX
-        )
-        Tunables.ghostBallDiameterPx = diameter
-        AutoAimPrefs.setGhostBallDiameterPx(diameter)
-        onGhostBallDiameterChanged(diameter)
-        return true
+    private fun startSemiAutoCalibrationHandles() {
+        val svc = service ?: return
+        val wm = windowManager ?: return
+
+        // Start the crosshair at the current calibration's center if one
+        // exists, else the screen center.
+        semiCenterX = if (Tunables.tableLeft >= 0f) (Tunables.tableLeft + Tunables.tableRight) / 2f else screenWidth / 2f
+        semiCenterY = if (Tunables.tableTop >= 0f) (Tunables.tableTop + Tunables.tableBottom) / 2f else screenHeight / 2f
+
+        val handle = EdgeHandle(svc, wm, screenWidth, screenHeight, semiCenterX, semiCenterY, crosshair = true) { x, y ->
+            semiCenterX = x; semiCenterY = y
+            semiCenterDPad?.reposition()
+            drawView?.invalidate()
+        }
+        semiCenterHandle = handle
+        semiCenterDPad = EdgeDPad(svc, wm, screenWidth, screenHeight, handle) { drawView?.invalidate() }
+    }
+
+    private fun saveSemiAutoCalibrationAndRemoveHandles() {
+        val halfW = Tunables.tableTemplateWidth / 2f
+        val halfH = Tunables.tableTemplateHeight / 2f
+        val left = semiCenterX - halfW
+        val right = semiCenterX + halfW
+        val top = semiCenterY - halfH
+        val bottom = semiCenterY + halfH
+
+        AutoAimPrefs.saveTableBounds(left, top, right, bottom)
+        Tunables.tableLeft = left
+        Tunables.tableTop = top
+        Tunables.tableRight = right
+        Tunables.tableBottom = bottom
+        // Deliberately NOT touching the template here — semi-auto only
+        // re-centers a known size, it never redefines it.
+
+        semiCenterHandle?.remove(); semiCenterHandle = null
+        semiCenterDPad?.remove(); semiCenterDPad = null
     }
 
     // ---------------- Manual CUE / TARGET controller ----------------
@@ -808,12 +848,15 @@ object OverlayController {
         edgeBHandle?.remove(); edgeBHandle = null
         edgeADPad?.remove(); edgeADPad = null
         edgeBDPad?.remove(); edgeBDPad = null
+        semiCenterHandle?.remove(); semiCenterHandle = null
+        semiCenterDPad?.remove(); semiCenterDPad = null
         manualCueHandle?.remove(); manualCueHandle = null
         manualTargetHandle?.remove(); manualTargetHandle = null
         manualDestHandle?.remove(); manualDestHandle = null
         drawView = null; handleView = null; panelView = null; windowManager = null
         service = null
         calibrationMode = false
+        semiAutoCalibrationMode = false
         lockedResult = null
         lockHoldFrames = 0
         captureAlive = false
@@ -831,9 +874,10 @@ private class EdgeHandle(
     private val screenHeight: Int,
     initX: Float,
     initY: Float,
+    crosshair: Boolean = false,
     private val onMoved: (Float, Float) -> Unit
 ) {
-    private val view = EdgeHandleView(context)
+    private val view = EdgeHandleView(context, crosshair)
     private val params = WindowManager.LayoutParams(
         EDGE_HANDLE_HITBOX_PX,
         EDGE_HANDLE_HITBOX_PX,
@@ -903,18 +947,38 @@ private class EdgeHandle(
     }
 }
 
-private class EdgeHandleView(context: Context) : View(context) {
+private class EdgeHandleView(context: Context, private val crosshair: Boolean = false) : View(context) {
     private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = Color.BLACK
         strokeWidth = 3f
+    }
+    private val crosshairLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.BLACK
+        strokeWidth = 3f
+    }
+    private val crosshairCore = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.YELLOW
     }
 
     override fun onDraw(canvas: Canvas) {
         val cx = width / 2f
         val cy = height / 2f
         val half = EDGE_HANDLE_VISUAL_PX / 2f
-        canvas.drawRect(cx - half, cy - half, cx + half, cy + half, outline)
+        if (crosshair) {
+            // A crosshair reads as "find this exact point" much more
+            // clearly than a square outline — used for the semi-auto
+            // center marker, where the whole job is placing one pixel
+            // precisely rather than framing a corner.
+            canvas.drawLine(cx - half, cy, cx + half, cy, crosshairLine)
+            canvas.drawLine(cx, cy - half, cx, cy + half, crosshairLine)
+            canvas.drawCircle(cx, cy, half * 0.22f, crosshairCore)
+            canvas.drawCircle(cx, cy, half * 0.22f, outline)
+        } else {
+            canvas.drawRect(cx - half, cy - half, cx + half, cy + half, outline)
+        }
     }
 }
 
@@ -1379,6 +1443,16 @@ class DrawOverlayView(context: Context) : View(context) {
         color = Color.YELLOW
         strokeWidth = 3f
     }
+    // Semi-auto mode never has literal placed corners — this rect is a
+    // reconstructed *preview* (center +/- template/2), so it's drawn
+    // dashed to read as "computed" rather than "placed", same color
+    // family as manual mode for a consistent calibration look.
+    private val calRectPreviewPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.YELLOW
+        strokeWidth = 3f
+        pathEffect = DashPathEffect(floatArrayOf(18f, 12f), 0f)
+    }
 
     // First-segment paints (border + colored center), and dimmer variants
     // for every segment after a bank reflection — same palette as the
@@ -1461,6 +1535,18 @@ class DrawOverlayView(context: Context) : View(context) {
                 maxOf(OverlayController.edgeAX, OverlayController.edgeBX),
                 maxOf(OverlayController.edgeAY, OverlayController.edgeBY),
                 calRectPaint
+            )
+        }
+
+        if (OverlayController.semiAutoCalibrationMode) {
+            val halfW = Tunables.tableTemplateWidth / 2f
+            val halfH = Tunables.tableTemplateHeight / 2f
+            canvas.drawRect(
+                OverlayController.semiCenterX - halfW,
+                OverlayController.semiCenterY - halfH,
+                OverlayController.semiCenterX + halfW,
+                OverlayController.semiCenterY + halfH,
+                calRectPreviewPaint
             )
         }
 

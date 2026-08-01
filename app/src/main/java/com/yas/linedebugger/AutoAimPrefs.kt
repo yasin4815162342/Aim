@@ -74,6 +74,14 @@ object AutoAimPrefs {
     private const val KEY_TABLE_RIGHT = "table_right"
     private const val KEY_TABLE_BOTTOM = "table_bottom"
 
+    // Semi-automatic calibration "template" — the table's on-screen
+    // width/height captured from the most recent full manual (2-corner)
+    // calibration. A real table's rails are rigid, so once this is known
+    // for this device/game, re-calibrating only requires finding the
+    // table's center pixel again; see saveTableTemplate / OverlayController.
+    private const val KEY_TABLE_TEMPLATE_W = "table_template_w"
+    private const val KEY_TABLE_TEMPLATE_H = "table_template_h"
+
     private const val KEY_AIM_VISIBLE = "aim_visible"
     private const val KEY_TWEAK_PANEL_VISIBLE = "tweak_panel_visible"
 
@@ -402,6 +410,18 @@ object AutoAimPrefs {
             .apply()
     }
 
+    // -1 = no template captured yet (semi-auto calibration needs one).
+    fun getTableTemplateWidth() = prefs.getFloat(KEY_TABLE_TEMPLATE_W, -1f)
+    fun getTableTemplateHeight() = prefs.getFloat(KEY_TABLE_TEMPLATE_H, -1f)
+    fun hasTableTemplate() = getTableTemplateWidth() > 0f && getTableTemplateHeight() > 0f
+
+    fun saveTableTemplate(width: Float, height: Float) {
+        prefs.edit()
+            .putFloat(KEY_TABLE_TEMPLATE_W, width)
+            .putFloat(KEY_TABLE_TEMPLATE_H, height)
+            .apply()
+    }
+
     fun isAimVisible() = prefs.getBoolean(KEY_AIM_VISIBLE, DEFAULT_AIM_VISIBLE)
     fun setAimVisible(v: Boolean) { prefs.edit().putBoolean(KEY_AIM_VISIBLE, v).apply() }
 
@@ -553,6 +573,8 @@ object AutoAimPrefs {
         Tunables.tableTop = getTableTop()
         Tunables.tableRight = getTableRight()
         Tunables.tableBottom = getTableBottom()
+        Tunables.tableTemplateWidth = getTableTemplateWidth()
+        Tunables.tableTemplateHeight = getTableTemplateHeight()
 
         Tunables.aimVisible = isAimVisible()
         Tunables.tweakPanelVisible = isTweakPanelVisible()

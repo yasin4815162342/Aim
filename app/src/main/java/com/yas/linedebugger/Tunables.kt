@@ -92,6 +92,12 @@ object Tunables {
     @Volatile var tableRight: Float = -1f
     @Volatile var tableBottom: Float = -1f
 
+    // --- Semi-auto calibration template: the table's on-screen width/
+    // height, captured from the last full manual (2-corner) calibration.
+    // -1 = no template yet (see OverlayController.toggleSemiAutoCalibrationMode). ---
+    @Volatile var tableTemplateWidth: Float = -1f
+    @Volatile var tableTemplateHeight: Float = -1f
+
     // --- Visibility toggles ---
     @Volatile var aimVisible: Boolean = AutoAimPrefs.DEFAULT_AIM_VISIBLE
     @Volatile var tweakPanelVisible: Boolean = AutoAimPrefs.DEFAULT_TWEAK_PANEL_VISIBLE
