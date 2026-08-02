@@ -157,6 +157,7 @@ object ManualControlPanelBuilder {
         }
         swatch(Color.WHITE); swatch(Color.YELLOW); swatch(Color.CYAN)
         swatch(Color.GREEN); swatch(Color.rgb(255, 140, 0)); swatch(Color.MAGENTA)
+        swatch(Color.rgb(60, 60, 60))
         root.addView(swatches)
 
         checkbox("Dashed line", Tunables.manualDashedLineEnabled) {
@@ -165,12 +166,28 @@ object ManualControlPanelBuilder {
         checkbox("Double line", Tunables.manualDoubleLineEnabled) {
             Tunables.manualDoubleLineEnabled = it; AutoAimPrefs.setManualDoubleLineEnabled(it)
         }
-        hint("Offset from the ball's own radius — 0 keeps the double lines exactly ball-width apart, same as the Manual app's original slider.")
+        checkbox("Band style", Tunables.manualBandStyleEnabled) {
+            Tunables.manualBandStyleEnabled = it; AutoAimPrefs.setManualBandStyleEnabled(it)
+        }
+        hint("Band style swaps the two flanking lines for one wide translucent band wrapped around the center line — the collision-width look. Off keeps the classic two-line gap style. Offset below — 0 keeps the band/lines exactly ball-width apart, same as the Manual app's original slider.")
         floatSlider(
             "Double line width offset",
             AutoAimPrefs.MANUAL_DOUBLE_LINE_WIDTH_OFFSET_MIN_PX, AutoAimPrefs.MANUAL_DOUBLE_LINE_WIDTH_OFFSET_MAX_PX,
             Tunables.manualDoubleLineWidthOffsetPx, 120, { "%.0f px".format(Locale.US, it) }
         ) { Tunables.manualDoubleLineWidthOffsetPx = it; AutoAimPrefs.setManualDoubleLineWidthOffsetPx(it) }
+
+        floatSlider(
+            "Double line thickness",
+            AutoAimPrefs.MANUAL_DOUBLE_LINE_WIDTH_MIN_PX, AutoAimPrefs.MANUAL_DOUBLE_LINE_WIDTH_MAX_PX,
+            Tunables.manualDoubleLineWidthPx, 90, { "%.1f px".format(Locale.US, it) }
+        ) { Tunables.manualDoubleLineWidthPx = it; AutoAimPrefs.setManualDoubleLineWidthPx(it) }
+        hint("Thickness only applies to the two individual strokes in Classic mode — Band style's width comes from the offset slider above instead.")
+
+        intSlider(
+            "Double line opacity", AutoAimPrefs.MANUAL_DOUBLE_LINE_OPACITY_MIN, AutoAimPrefs.MANUAL_DOUBLE_LINE_OPACITY_MAX,
+            Tunables.manualDoubleLineOpacity
+        ) { Tunables.manualDoubleLineOpacity = it; AutoAimPrefs.setManualDoubleLineOpacity(it) }
+        hint("Lower opacity reads as a soft translucent glow, in either style.")
 
         checkbox("Show rail ghost ball", Tunables.manualGhostRailEnabled) {
             Tunables.manualGhostRailEnabled = it; AutoAimPrefs.setManualGhostRailEnabled(it)

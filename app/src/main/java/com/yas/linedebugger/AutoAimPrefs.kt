@@ -115,6 +115,9 @@ object AutoAimPrefs {
     private const val KEY_MANUAL_LINE_COLOR = "manual_line_color"
     private const val KEY_MANUAL_DOUBLE_LINE_ENABLED = "manual_double_line_enabled"
     private const val KEY_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX = "manual_double_line_width_offset_px"
+    private const val KEY_MANUAL_DOUBLE_LINE_WIDTH_PX = "manual_double_line_width_px"
+    private const val KEY_MANUAL_DOUBLE_LINE_OPACITY = "manual_double_line_opacity"
+    private const val KEY_MANUAL_BAND_STYLE_ENABLED = "manual_band_style_enabled"
     private const val KEY_MANUAL_DASHED_LINE_ENABLED = "manual_dashed_line_enabled"
     private const val KEY_MANUAL_GHOST_RAIL_ENABLED = "manual_ghost_rail_enabled"
 
@@ -318,6 +321,25 @@ object AutoAimPrefs {
     const val MANUAL_DOUBLE_LINE_WIDTH_OFFSET_MIN_PX = -6f
     const val MANUAL_DOUBLE_LINE_WIDTH_OFFSET_MAX_PX = 6f
     const val DEFAULT_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX = 0f
+
+    // Double line's own stroke thickness/opacity — was hardcoded 2.5px @
+    // a fixed ratio of the main line's opacity; now independent so a
+    // soft, wide, translucent "glow" look is reachable, not just a thin
+    // flat line.
+    const val MANUAL_DOUBLE_LINE_WIDTH_MIN_PX = 1f
+    const val MANUAL_DOUBLE_LINE_WIDTH_MAX_PX = 10f
+    const val DEFAULT_MANUAL_DOUBLE_LINE_WIDTH_PX = 4f
+
+    const val MANUAL_DOUBLE_LINE_OPACITY_MIN = 20
+    const val MANUAL_DOUBLE_LINE_OPACITY_MAX = 220
+    const val DEFAULT_MANUAL_DOUBLE_LINE_OPACITY = 90
+
+    // Band style: instead of two thin flanking lines with a visible gap,
+    // draws ONE wide translucent stroke centered on the aim line (width =
+    // ball diameter, via the same width-offset slider) with the crisp
+    // center line drawn on top — matches the reference app's single soft
+    // band-around-the-line look instead of two parallel strokes.
+    const val DEFAULT_MANUAL_BAND_STYLE_ENABLED = false
 
     // ---- Manual KISS / DEST controller (kiss-shot assist) ----
     const val DEFAULT_MANUAL_KISS_ENABLED = false
@@ -538,9 +560,18 @@ object AutoAimPrefs {
     fun isManualDoubleLineEnabled() = prefs.getBoolean(KEY_MANUAL_DOUBLE_LINE_ENABLED, DEFAULT_MANUAL_DOUBLE_LINE_ENABLED)
     fun setManualDoubleLineEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_DOUBLE_LINE_ENABLED, v).apply() }
 
+    fun isManualBandStyleEnabled() = prefs.getBoolean(KEY_MANUAL_BAND_STYLE_ENABLED, DEFAULT_MANUAL_BAND_STYLE_ENABLED)
+    fun setManualBandStyleEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_BAND_STYLE_ENABLED, v).apply() }
+
     fun getManualDoubleLineWidthOffsetPx() =
         prefs.getFloat(KEY_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX, DEFAULT_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX)
     fun setManualDoubleLineWidthOffsetPx(v: Float) { prefs.edit().putFloat(KEY_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX, v).apply() }
+
+    fun getManualDoubleLineWidthPx() = prefs.getFloat(KEY_MANUAL_DOUBLE_LINE_WIDTH_PX, DEFAULT_MANUAL_DOUBLE_LINE_WIDTH_PX)
+    fun setManualDoubleLineWidthPx(v: Float) { prefs.edit().putFloat(KEY_MANUAL_DOUBLE_LINE_WIDTH_PX, v).apply() }
+
+    fun getManualDoubleLineOpacity() = prefs.getInt(KEY_MANUAL_DOUBLE_LINE_OPACITY, DEFAULT_MANUAL_DOUBLE_LINE_OPACITY)
+    fun setManualDoubleLineOpacity(v: Int) { prefs.edit().putInt(KEY_MANUAL_DOUBLE_LINE_OPACITY, v).apply() }
 
     fun isManualDashedLineEnabled() = prefs.getBoolean(KEY_MANUAL_DASHED_LINE_ENABLED, DEFAULT_MANUAL_DASHED_LINE_ENABLED)
     fun setManualDashedLineEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_DASHED_LINE_ENABLED, v).apply() }
@@ -637,7 +668,10 @@ object AutoAimPrefs {
         Tunables.manualLineOpacity = getManualLineOpacity()
         Tunables.manualLineColor = getManualLineColor()
         Tunables.manualDoubleLineEnabled = isManualDoubleLineEnabled()
+        Tunables.manualBandStyleEnabled = isManualBandStyleEnabled()
         Tunables.manualDoubleLineWidthOffsetPx = getManualDoubleLineWidthOffsetPx()
+        Tunables.manualDoubleLineWidthPx = getManualDoubleLineWidthPx()
+        Tunables.manualDoubleLineOpacity = getManualDoubleLineOpacity()
         Tunables.manualDashedLineEnabled = isManualDashedLineEnabled()
         Tunables.manualGhostRailEnabled = isManualGhostRailEnabled()
 

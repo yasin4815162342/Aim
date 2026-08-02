@@ -1522,6 +1522,17 @@ class DrawOverlayView(context: Context) : View(context) {
     private val manualBankDoublePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.LTGRAY; strokeWidth = 2.5f; strokeCap = Paint.Cap.ROUND
     }
+    // Band style: one wide translucent stroke centered on the aim line
+    // (width set per-segment from the ball-diameter math below) instead
+    // of two thin flanking lines with a gap. Separate paints from the
+    // classic double-line ones above since their strokeWidth is set once
+    // per frame while band width is recomputed at each draw site.
+    private val manualBandPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; strokeCap = Paint.Cap.ROUND
+    }
+    private val manualBankBandPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.LTGRAY; strokeCap = Paint.Cap.ROUND
+    }
     private val manualMarkerRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE; color = Color.BLACK; strokeWidth = 3f
     }
@@ -1648,8 +1659,8 @@ class DrawOverlayView(context: Context) : View(context) {
         borderPaint.alpha = (255 * alphaScale).toInt()
         bankCenterPaint.color = Tunables.autoAimColor
         bankCenterPaint.strokeWidth = Tunables.autoAimWidthPx
-        bankCenterPaint.alpha = (190 * alphaScale).toInt()
-        bankBorderPaint.alpha = (150 * alphaScale).toInt()
+        bankCenterPaint.alpha = (255 * alphaScale).toInt()
+        bankBorderPaint.alpha = (255 * alphaScale).toInt()
         doublePaint.alpha = (100 * alphaScale).toInt()
         bankDoublePaint.alpha = (70 * alphaScale).toInt()
         markerRing.alpha = (255 * alphaScale).toInt()
@@ -1981,22 +1992,47 @@ class DrawOverlayView(context: Context) : View(context) {
         manualBankCenterPaint.strokeWidth = Tunables.manualLineWidthPx
         manualBorderPaint.alpha = (255 * alphaScale).toInt()
         manualCenterPaint.alpha = (255 * alphaScale).toInt()
-        manualBankBorderPaint.alpha = (150 * alphaScale).toInt()
-        manualBankCenterPaint.alpha = (190 * alphaScale).toInt()
-        manualDoublePaint.alpha = (100 * alphaScale).toInt()
-        manualBankDoublePaint.alpha = (70 * alphaScale).toInt()
+        manualBankBorderPaint.alpha = (255 * alphaScale).toInt()
+        manualBankCenterPaint.alpha = (255 * alphaScale).toInt()
+        manualDoublePaint.strokeWidth = Tunables.manualDoubleLineWidthPx
+        manualBankDoublePaint.strokeWidth = Tunables.manualDoubleLineWidthPx
+        manualDoublePaint.alpha = Tunables.manualDoubleLineOpacity
+        manualBankDoublePaint.alpha = Tunables.manualDoubleLineOpacity
+        manualBandPaint.alpha = Tunables.manualDoubleLineOpacity
+        manualBankBandPaint.alpha = Tunables.manualDoubleLineOpacity
         manualMarkerRing.alpha = (255 * alphaScale).toInt()
         manualMarkerDot.alpha = (255 * alphaScale).toInt()
 
-        // ---- Always: CUE → TARGET aim line ----
+        // Whether kiss-shot mode currently owns the trajectory — DEST
+        // exists (manualKissEnabled) AND has been tapped active (green).
+        // When true, the plain CUE→TARGET line and the bank walk below
+        // both stand down in favor of the green kiss guide, exactly like
+        // toggling kiss off hands the trajectory back to them.
+        val kissActive = Tunables.manualKissEnabled && Tunables.manualKissActive
+
+        // ---- CUE → TARGET aim line (bank/cut mode only) ----
+        // Skipped while kiss-shot mode is active — it draws its own green
+        // guide below instead, and this line + its double/band lines
+        // would otherwise stay visible underneath it, cluttering the view.
         val nearT = (len - halfBall).coerceAtLeast(0f)
-        if (nearT > 1f) {
+        if (nearT > 1f && !kissActive) {
             val endNearX = cueX + dx * nearT
             val endNearY = cueY + dy * nearT
+
+            if (Tunables.manualDoubleLineEnabled && Tunables.manualBandStyleEnabled) {
+                // Band drawn first, underneath, so the crisp center line
+                // reads as a thin line running through a soft wide band —
+                // matching the reference app's collision-width look.
+                var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                manualBandPaint.strokeWidth = doubleHalfWidth * 2f
+                canvas.drawLine(cueX, cueY, endNearX, endNearY, manualBandPaint)
+            }
+
             drawManualSegLine(canvas, cueX, cueY, endNearX, endNearY, manualBorderPaint)
             drawManualSegLine(canvas, cueX, cueY, endNearX, endNearY, manualCenterPaint)
 
-            if (Tunables.manualDoubleLineEnabled) {
+            if (Tunables.manualDoubleLineEnabled && !Tunables.manualBandStyleEnabled) {
                 var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
                 if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
                 val px = -dy * doubleHalfWidth
@@ -2018,7 +2054,7 @@ class DrawOverlayView(context: Context) : View(context) {
         // actually switches between kiss and plain bank trajectories, so
         // you're never forced to leave the settings panel to flip back and
         // forth mid-session.
-        if (Tunables.manualKissEnabled && Tunables.manualKissActive) {
+        if (kissActive) {
             val destX = OverlayController.manualDestX
             val destY = OverlayController.manualDestY
             val solved = KissShot.solve(
@@ -2089,9 +2125,15 @@ class DrawOverlayView(context: Context) : View(context) {
                 if (tDraw > farT) {
                     val farX = curX + segDx * farT
                     val farY = curY + segDy * farT
+                    if (Tunables.manualDoubleLineEnabled && Tunables.manualBandStyleEnabled) {
+                        var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                        if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                        manualBandPaint.strokeWidth = doubleHalfWidth * 2f
+                        canvas.drawLine(farX, farY, endX, endY, manualBandPaint)
+                    }
                     drawManualSegLine(canvas, farX, farY, endX, endY, segBorder)
                     drawManualSegLine(canvas, farX, farY, endX, endY, segCenter)
-                    if (Tunables.manualDoubleLineEnabled) {
+                    if (Tunables.manualDoubleLineEnabled && !Tunables.manualBandStyleEnabled) {
                         var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
                         if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
                         val px = -segDy * doubleHalfWidth
@@ -2103,9 +2145,15 @@ class DrawOverlayView(context: Context) : View(context) {
                 }
             } else if (segment > 0) {
                 // Reflected bank segments.
+                if (Tunables.manualDoubleLineEnabled && Tunables.manualBandStyleEnabled) {
+                    var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                    if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                    manualBankBandPaint.strokeWidth = doubleHalfWidth * 2f
+                    canvas.drawLine(curX, curY, endX, endY, manualBankBandPaint)
+                }
                 drawManualSegLine(canvas, curX, curY, endX, endY, segBorder)
                 drawManualSegLine(canvas, curX, curY, endX, endY, segCenter)
-                if (Tunables.manualDoubleLineEnabled) {
+                if (Tunables.manualDoubleLineEnabled && !Tunables.manualBandStyleEnabled) {
                     var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
                     if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
                     val px = -segDy * doubleHalfWidth
@@ -2142,7 +2190,21 @@ class DrawOverlayView(context: Context) : View(context) {
             }
             if (reflected == null) break
             segDx = reflected[0]; segDy = reflected[1]
-            curX = endX; curY = endY
+            if (segment == 0) {
+                // TARGET's own ghost ball sits at this bend (endX,endY is
+                // its center). The incoming line above stopped halfBall
+                // short of it (nearT); without this offset the reflected
+                // segment started exactly at that center, so it drew
+                // through the ball's near half while leaving the incoming
+                // side's gap disconnected. Starting halfBall past the bend
+                // along the new direction mirrors the same gap on the far
+                // side instead — symmetric, connected.
+                curX = endX + segDx * halfBall
+                curY = endY + segDy * halfBall
+                remaining -= halfBall
+            } else {
+                curX = endX; curY = endY
+            }
         }
     }
 

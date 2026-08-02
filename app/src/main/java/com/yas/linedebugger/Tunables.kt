@@ -136,7 +136,15 @@ object Tunables {
     @Volatile var manualLineOpacity: Int = AutoAimPrefs.DEFAULT_MANUAL_LINE_OPACITY
     @Volatile var manualLineColor: Int = AutoAimPrefs.DEFAULT_MANUAL_LINE_COLOR
     @Volatile var manualDoubleLineEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_DOUBLE_LINE_ENABLED
+    // When true (and manualDoubleLineEnabled), swaps the two flanking
+    // lines for a single wide translucent band centered on the aim line.
+    @Volatile var manualBandStyleEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_BAND_STYLE_ENABLED
     @Volatile var manualDoubleLineWidthOffsetPx: Float = AutoAimPrefs.DEFAULT_MANUAL_DOUBLE_LINE_WIDTH_OFFSET_PX
+    // Double line's own stroke thickness and opacity — independent of
+    // manualLineOpacity now, so it can be dialed into a soft translucent
+    // "glow" band instead of a thin flat line.
+    @Volatile var manualDoubleLineWidthPx: Float = AutoAimPrefs.DEFAULT_MANUAL_DOUBLE_LINE_WIDTH_PX
+    @Volatile var manualDoubleLineOpacity: Int = AutoAimPrefs.DEFAULT_MANUAL_DOUBLE_LINE_OPACITY
     @Volatile var manualDashedLineEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_DASHED_LINE_ENABLED
     @Volatile var manualGhostRailEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_GHOST_RAIL_ENABLED
 
