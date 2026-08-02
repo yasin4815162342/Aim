@@ -199,16 +199,7 @@ object ManualControlPanelBuilder {
         checkbox("Enable Kiss Shot assist", Tunables.manualKissEnabled) {
             OverlayController.setManualKissEnabled(it)
         }
-
-        floatSlider(
-            "Kiss line width", AutoAimPrefs.MANUAL_KISS_LINE_WIDTH_MIN_PX, AutoAimPrefs.MANUAL_KISS_LINE_WIDTH_MAX_PX,
-            Tunables.manualKissLineWidthPx, 50, { "%.1f px".format(Locale.US, it) }
-        ) { Tunables.manualKissLineWidthPx = it; AutoAimPrefs.setManualKissLineWidthPx(it) }
-
-        intSlider(
-            "Kiss line opacity", AutoAimPrefs.MANUAL_KISS_LINE_OPACITY_MIN, AutoAimPrefs.MANUAL_KISS_LINE_OPACITY_MAX,
-            Tunables.manualKissLineOpacity
-        ) { Tunables.manualKissLineOpacity = it; AutoAimPrefs.setManualKissLineOpacity(it) }
+        hint("Kiss line color, width, opacity, and dashing now follow the CUE/TARGET line settings above — just without the double-line flanks.")
 
         floatSlider(
             "Kiss ball-size calibration",

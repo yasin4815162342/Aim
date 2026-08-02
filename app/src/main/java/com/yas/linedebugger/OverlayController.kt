@@ -1540,18 +1540,14 @@ class DrawOverlayView(context: Context) : View(context) {
         style = Paint.Style.FILL; color = Color.RED
     }
 
-    // Kiss-shot assist paints: a tiny contact dot on purple's edge (kept
-    // small on purpose — a few pixels is plenty for aiming accuracy and
-    // a big marker just gets in the way) and a thin ghost->DEST guide
-    // line showing Blue's expected path after the kiss.
+    // Kiss-shot assist: a tiny contact dot on TARGET's edge (kept small on
+    // purpose — a few pixels is plenty for aiming accuracy and a big marker
+    // just gets in the way). The two guide lines (CUE→ghost, ghost→DEST) no
+    // longer have their own paint — they're drawn with manualBorderPaint/
+    // manualCenterPaint below, same color/width/opacity/dashing as the
+    // CUE/TARGET line, just without the double-line flanks.
     private val kissContactDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL; color = Color.GREEN
-    }
-    private val kissGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        color = Color.GREEN
-        strokeWidth = AutoAimPrefs.DEFAULT_MANUAL_KISS_LINE_WIDTH_PX
-        alpha = AutoAimPrefs.DEFAULT_MANUAL_KISS_LINE_OPACITY
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -2070,8 +2066,6 @@ class DrawOverlayView(context: Context) : View(context) {
             if (solved != null) {
                 val ghostX = solved[0]; val ghostY = solved[1]
                 val contactX = solved[2]; val contactY = solved[3]
-                kissGuidePaint.strokeWidth = Tunables.manualKissLineWidthPx
-                kissGuidePaint.alpha = Tunables.manualKissLineOpacity
                 // Approach guide: actual CUE position straight to the
                 // GHOST BALL centre — where CUE's own centre needs to be
                 // at the moment of contact — not the contact point itself
@@ -2080,9 +2074,15 @@ class DrawOverlayView(context: Context) : View(context) {
                 // onward to DEST, showing TARGET's expected path after the
                 // kiss. Both lines share the ghost-ball point as their
                 // join, so together they read as one continuous path from
-                // CUE through the moment of contact to DEST.
-                canvas.drawLine(cueX, cueY, ghostX, ghostY, kissGuidePaint)
-                canvas.drawLine(ghostX, ghostY, destX, destY, kissGuidePaint)
+                // CUE through the moment of contact to DEST. Rendered with
+                // manualBorderPaint + manualCenterPaint (already configured
+                // above from Tunables.manualLineColor/Width/Opacity) so the
+                // kiss line always matches the CUE/TARGET line exactly —
+                // just without the double-line flanks.
+                drawManualSegLine(canvas, cueX, cueY, ghostX, ghostY, manualBorderPaint)
+                drawManualSegLine(canvas, cueX, cueY, ghostX, ghostY, manualCenterPaint)
+                drawManualSegLine(canvas, ghostX, ghostY, destX, destY, manualBorderPaint)
+                drawManualSegLine(canvas, ghostX, ghostY, destX, destY, manualCenterPaint)
                 canvas.drawCircle(contactX, contactY, 3f, kissContactDot)
             }
             return
