@@ -10,6 +10,7 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.roundToInt
 
 data class DetectionResult(
     val hasLine: Boolean,
@@ -51,6 +52,38 @@ object LineDetector {
     private fun edgeWeight(bright: Int): Float =
         (bright - Tunables.minBrightness).toFloat().coerceAtLeast(0.05f)
 
+    // Tunables.minLinePixels, ballErodeRadius and ballDilateGrow are all
+    // dialed in against a capture buffer, but the buffer's resolution
+    // changes with Tunables.captureScale while the on-screen Ray Zone
+    // (Tunables.circleDiameter) does not. A guideline of fixed on-screen
+    // width and length maps onto a crop whose side (diamCap) shrinks
+    // linearly with captureScale — so the raw candidate pixel COUNT for
+    // that same on-screen line shrinks with AREA, i.e. ~captureScale².
+    // A detection that clears minLinePixels comfortably at 1.0x can fall
+    // under that same fixed floor at 0.8x purely from the resolution
+    // drop, with nothing on screen actually changing — read from the
+    // outside as "doesn't react to small movements" / "useless below
+    // 1.0x", because the detector was silently returning hasLine=false
+    // (or trimming a marginal component below the floor) on those frames.
+    // Scaling the floor by the same area ratio keeps it representing a
+    // constant on-screen requirement at every capture resolution instead
+    // of a constant buffer-pixel one. Radii (erode/dilate) are linear
+    // measures, so they're scaled by captureScale itself, not its square.
+    private fun currentCaptureScale(): Float =
+        Tunables.captureScale.coerceIn(AutoAimPrefs.CAPTURE_SCALE_MIN, AutoAimPrefs.CAPTURE_SCALE_MAX)
+
+    private fun scaledMinLinePixels(): Int {
+        val s = currentCaptureScale()
+        return (Tunables.minLinePixels * s * s).roundToInt().coerceAtLeast(12)
+    }
+
+    private fun scaledBallRadii(): Pair<Int, Int> {
+        val s = currentCaptureScale()
+        val erode = (Tunables.ballErodeRadius * s).roundToInt().coerceAtLeast(1)
+        val grow = (Tunables.ballDilateGrow * s).roundToInt().coerceAtLeast(1)
+        return erode to grow
+    }
+
     private fun ensureScratch(n: Int) {
         if (candidateBuf.size < n) {
             candidateBuf = BooleanArray(n)
@@ -88,51 +121,25 @@ object LineDetector {
 
         val mode = Tunables.detectionMode
 
-        // The Ray Zone the user drags onto the guideline is a CIRCLE
-        // (Tunables.circleDiameter), but extractCrop() has no way to grab a
-        // circular region from the frame buffer — it hands us the square
-        // that bounds it. Without this mask, pixels in the square's four
-        // corners (outside the visible circle, up to ~21% of the square's
-        // area) are still fair game to the color/HSV checks below, so a
-        // guideline running close to the edge of the Ray Zone can pull the
-        // weighted centroid past the circle's radius — sometimes past it,
-        // sometimes not, a one-pixel anti-aliasing difference either way
-        // between frames. That flicker is what was driving the "throbbing
-        // on the edges": OverlayController's Ray Zone clip
-        // (clipOutsideRayZone) branches on whether the anchor point is
-        // inside or outside that same circle, so a centroid ping-ponging
-        // across the boundary flips which branch runs, which flips the
-        // rendered line's start point between two very different points on
-        // the ray every other frame.
+        // The Ray Zone the user drags onto the guideline used to be a
+        // CIRCLE inscribed in the square crop extractCrop() hands us, so
+        // this loop masked out the square's four corners (up to ~21% of
+        // its area) to keep candidates confined to that circle — a
+        // guideline running close to the edge could otherwise pull the
+        // weighted centroid past the circle's boundary, and a centroid
+        // flickering across that boundary flipped which branch
+        // OverlayController's zone clip took frame to frame (the
+        // "throbbing on the edges" bug).
         //
-        // Masking candidates to the inscribed circle fixes this by
-        // construction, not just in practice: a weighted average of points
-        // confined to a disk can never leave that disk (the disk is
-        // convex), so the centroid is now geometrically guaranteed to stay
-        // inside radius `size/2` — comfortably inside the 20%-larger
-        // zoneR used for clipping, with margin to spare. The flip can't
-        // happen anymore, regardless of how noisy any single frame's pixel
-        // classification is right at the boundary.
-        // True center of the square, in the same pixel-corner index space
-        // as col/row below (so it lines up with the crop the way
-        // extractCrop actually built it, not shifted by half a pixel).
-        val zoneCenter = size * 0.5
-        val zoneRadius = size * 0.5
-        val zoneRadiusSq = zoneRadius * zoneRadius
-
+        // Now that the Ray Zone itself is a SQUARE — the same shape as
+        // the crop — there's nothing to mask: the entire crop IS the
+        // zone, corners included. The convexity argument that motivated
+        // the circular mask still holds and is now free: a weighted
+        // average of points confined to a square can never leave that
+        // square (squares are convex too), so the centroid is still
+        // geometrically guaranteed to stay inside the zone, with no
+        // pixels thrown away and no per-pixel distance test to pay for.
         for (i in 0 until n) {
-            val row = i / size
-            val col = i - row * size
-            // Test the pixel's CENTER, not its corner index — same +0.5
-            // convention the centroid uses below, so the mask boundary
-            // itself is pixel-accurate rather than off by half a pixel.
-            val ddx = (col + 0.5) - zoneCenter
-            val ddy = (row + 0.5) - zoneCenter
-            if (ddx * ddx + ddy * ddy > zoneRadiusSq) {
-                brightness[i] = 0
-                continue // outside the visible Ray Zone circle — never a candidate
-            }
-
             val p = pixels[i]
             val r = (p shr 16) and 0xFF
             val g = (p shr 8) and 0xFF
@@ -178,8 +185,9 @@ object LineDetector {
         }
 
         // --- Stage 1: separable morphological ball removal (O(n·r) not O(n·r²)) ---
-        val ballCore = erodeSeparable(isCandidate, size, Tunables.ballErodeRadius, scratchB)
-        val growR = Tunables.ballErodeRadius + Tunables.ballDilateGrow
+        val (erodeR, dilateGrow) = scaledBallRadii()
+        val ballCore = erodeSeparable(isCandidate, size, erodeR, scratchB)
+        val growR = erodeR + dilateGrow
         val ballGrown = dilateSeparable(ballCore, size, growR, scratchA)
 
         // lineMask into scratchB (ballCore no longer needed)
@@ -199,12 +207,7 @@ object LineDetector {
         if (Tunables.rayMonitorEnabled) {
             preview = IntArray(n)
             for (i in 0 until n) {
-                val row = i / size
-                val col = i - row * size
-                val ddx = (col + 0.5) - zoneCenter
-                val ddy = (row + 0.5) - zoneCenter
                 preview[i] = when {
-                    ddx * ddx + ddy * ddy > zoneRadiusSq -> 0xFF000000.toInt() // outside Ray Zone circle
                     lineMask[i] -> 0xFFFF00FF.toInt()
                     ballGrown[i] -> 0xFF3060FF.toInt()
                     isCandidate[i] -> 0xFFFFFF00.toInt()
@@ -243,7 +246,7 @@ object LineDetector {
                     totalW += w
                 }
             }
-            if (xs.size < Tunables.minLinePixels || totalW < 1f) {
+            if (xs.size < scaledMinLinePixels() || totalW < 1f) {
                 return DetectionResult(hasLine = false, previewArgb = preview)
             }
             meanX = 0.0; meanY = 0.0
@@ -275,7 +278,7 @@ object LineDetector {
         // the global aspect/fill checks upstream can't see.
         repeat(2) {
             val (fx, fy, fw) = filterByLocalWidth(xs, ys, ws, fit.angle, fit.meanX, fit.meanY)
-            if (fx.size >= Tunables.minLinePixels) {
+            if (fx.size >= scaledMinLinePixels()) {
                 xs.clear(); ys.clear(); ws.clear()
                 xs.addAll(fx); ys.addAll(fy); ws.addAll(fw)
                 fit = computeFit(xs, ys, ws)
@@ -291,7 +294,7 @@ object LineDetector {
         val inlierThreshold = (residualStd(xs, ys, ws, fit.angle, fit.meanX, fit.meanY) * 1.8)
             .coerceIn(1.2, 6.0).toFloat()
         val inlierIdx = ransacLineFit(xs, ys, ws, inlierDistPx = inlierThreshold)
-        if (inlierIdx.size >= Tunables.minLinePixels) {
+        if (inlierIdx.size >= scaledMinLinePixels()) {
             val rx = ArrayList<Int>(inlierIdx.size)
             val ry = ArrayList<Int>(inlierIdx.size)
             val rw = ArrayList<Float>(inlierIdx.size)
@@ -306,7 +309,7 @@ object LineDetector {
         // quantization noise, which is what it was originally designed for.
         run {
             val (tx, ty, tw) = trimOutliersWeighted(xs, ys, ws, fit.angle, fit.meanX, fit.meanY)
-            if (tx.size >= Tunables.minLinePixels) {
+            if (tx.size >= scaledMinLinePixels()) {
                 xs.clear(); ys.clear(); ws.clear()
                 xs.addAll(tx); ys.addAll(ty); ws.addAll(tw)
                 fit = computeFit(xs, ys, ws)
@@ -443,7 +446,7 @@ object LineDetector {
                     }
                 }
 
-                if (area < Tunables.minLinePixels) continue
+                if (area < scaledMinLinePixels()) continue
 
                 val bw = (maxX - minX + 1).toFloat()
                 val bh = (maxY - minY + 1).toFloat()

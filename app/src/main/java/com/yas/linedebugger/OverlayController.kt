@@ -3,14 +3,12 @@ package com.yas.linedebugger
 import android.app.Service
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PixelFormat
-import android.graphics.Shader
+import android.graphics.RectF
 import android.os.Build
 import android.util.DisplayMetrics
 import android.view.Gravity
@@ -1409,23 +1407,23 @@ private class ManualHandleView(
  * preview, and the manual CUE/TARGET controller's own line.
  */
 class DrawOverlayView(context: Context) : View(context) {
+    // Ray Zone controller ring — a square, same shape/side length as the
+    // crop extractCrop() actually grabs (Tunables.circleDiameter).
     private val circlePaint = Paint().apply {
         style = Paint.Style.STROKE
         strokeWidth = 4f
         color = Color.WHITE
         isAntiAlias = true
     }
-    // Ray Monitor preview: drawn as a circle (same on-screen diameter as
-    // the Ray Circle controller) instead of the old square, via a
-    // BitmapShader clipped by drawCircle — clipPath() doesn't anti-alias
-    // its edge, a shader-filled circle does.
-    private val monitorCirclePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
+    // Ray Monitor preview: the debug thumbnail is a square buffer already
+    // (LineDetector's preview is size x size), and the Ray Zone it mirrors
+    // is a square too now, so it's just blitted straight in — no clip
+    // shape/shader needed.
+    private val monitorSquarePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         isFilterBitmap = true
     }
-    private val monitorMatrix = Matrix()
+    private val previewRectF = RectF()
     private var previewBitmap: Bitmap? = null
-    private var previewShader: BitmapShader? = null
     private var previewSide: Int = -1
     private val clipPieceA = FloatArray(4)
     private val clipPieceB = FloatArray(4)
@@ -1572,15 +1570,15 @@ class DrawOverlayView(context: Context) : View(context) {
         val result = OverlayController.lastResult
         if (!OverlayController.captureless && OverlayController.captureAlive) {
             circlePaint.alpha = Tunables.circleAlpha
-            canvas.drawCircle(cx, cy, half, circlePaint)
+            canvas.drawRect(cx - half, cy - half, cx + half, cy + half, circlePaint)
 
             if (Tunables.rayMonitorEnabled) {
             if (result != null && result.previewArgb.isNotEmpty()) {
                 // Preview is captured at capture-scale resolution (can be
-                // smaller than the on-screen Ray Circle). Displayed here at
-                // the SAME on-screen diameter as the Ray Circle controller
-                // (Tunables.circleDiameter) and clipped to a circle to
-                // match it — was a square scaled 3x for readability before.
+                // smaller than the on-screen Ray Zone). Displayed here at
+                // the SAME on-screen side length as the Ray Zone controller
+                // (Tunables.circleDiameter). Both are squares now, so the
+                // buffer can be blitted straight in — no clip shape needed.
                 val n = result.previewArgb.size
                 val side = kotlin.math.sqrt(n.toDouble()).toInt()
                 if (side * side == n && side > 0) {
@@ -1588,25 +1586,16 @@ class DrawOverlayView(context: Context) : View(context) {
                         val bmp = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
                         previewBitmap = bmp
                         previewSide = side
-                        previewShader = BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
                     }
                     previewBitmap!!.setPixels(result.previewArgb, 0, side, 0, 0, side, side)
 
                     val disp = Tunables.circleDiameter.toFloat().coerceAtLeast(1f)
-                    val radius = disp / 2f
-                    val previewCx = 20f + radius
-                    val previewCy = 84f + radius
+                    val previewLeft = 20f
+                    val previewTop = 84f
+                    previewRectF.set(previewLeft, previewTop, previewLeft + disp, previewTop + disp)
 
-                    canvas.drawCircle(previewCx, previewCy, radius, bgPaint)
-
-                    val scale = disp / side.toFloat()
-                    monitorMatrix.reset()
-                    monitorMatrix.setScale(scale, scale)
-                    monitorMatrix.postTranslate(previewCx - radius, previewCy - radius)
-                    previewShader!!.setLocalMatrix(monitorMatrix)
-                    monitorCirclePaint.shader = previewShader
-                    canvas.drawCircle(previewCx, previewCy, radius, monitorCirclePaint)
-                    monitorCirclePaint.shader = null
+                    canvas.drawRect(previewRectF, bgPaint)
+                    canvas.drawBitmap(previewBitmap!!, null, previewRectF, monitorSquarePaint)
                 }
             }
             canvas.drawRect(16f, 16f, 720f, 76f, bgPaint)
@@ -1768,7 +1757,7 @@ class DrawOverlayView(context: Context) : View(context) {
             val hitVertical = abs(tWall - tX) <= abs(tWall - tY)
 
             if (Tunables.bankMarkerEnabled && segment + 1 < maxLines &&
-                hypot(endX - zoneCx, endY - zoneCy) >= zoneR
+                (abs(endX - zoneCx) > zoneR || abs(endY - zoneCy) > zoneR)
             ) {
                 // Bug #3 fix: ring radius now matches the same ball radius
                 // used to inset the wall above, so the marker's edge sits
@@ -1805,13 +1794,21 @@ class DrawOverlayView(context: Context) : View(context) {
 
     /**
      * Splits the segment [x1,y1]-[x2,y2] into the piece(s) that lie outside
-     * the circular Ray Zone (center zoneCx/zoneCy, radius zoneR), dropping
+     * the SQUARE Ray Zone (center zoneCx/zoneCy, half-side zoneR), dropping
      * whatever portion would fall inside it. Writes into clipPieceA (and
      * clipPieceB if there's a second piece) and returns the piece count
      * (0, 1, or 2) instead of allocating — this runs up to a few dozen
      * times per onDraw, so it's a real GC-pressure source at capture
      * frame rate. Every caller (main line, bank-reflected lines, doubles)
      * routes through here, so nothing needs its own zone-avoidance logic.
+     *
+     * Same "at most 2 outside pieces" structure as the old circle version:
+     * a square is convex, so a line can only be inside it over a single
+     * contiguous parameter interval [tLo, tHi] — everything before tLo and
+     * after tHi (if any, once clamped to [0,1]) is outside. That interval
+     * is found with the standard box/slab method instead of the circle's
+     * quadratic — intersect the segment's parameter range against each
+     * axis's [min,max] slab in turn.
      */
     private fun clipOutsideRayZone(
         x1: Float, y1: Float, x2: Float, y2: Float,
@@ -1819,35 +1816,41 @@ class DrawOverlayView(context: Context) : View(context) {
     ): Int {
         val dx = x2 - x1
         val dy = y2 - y1
-        val fx = x1 - zoneCx
-        val fy = y1 - zoneCy
-        val a = dx * dx + dy * dy
-        if (a < 1e-6f) {
-            if (hypot(fx, fy) < zoneR) return 0
+        val xMin = zoneCx - zoneR; val xMax = zoneCx + zoneR
+        val yMin = zoneCy - zoneR; val yMax = zoneCy + zoneR
+
+        var tLoRaw = 0f
+        var tHiRaw = 1f
+
+        if (abs(dx) > 1e-6f) {
+            var ta = (xMin - x1) / dx
+            var tb = (xMax - x1) / dx
+            if (ta > tb) { val tmp = ta; ta = tb; tb = tmp }
+            if (ta > tLoRaw) tLoRaw = ta
+            if (tb < tHiRaw) tHiRaw = tb
+        } else if (x1 < xMin || x1 > xMax) {
+            tHiRaw = -1f // segment is vertical and entirely outside the X slab
+        }
+
+        if (abs(dy) > 1e-6f) {
+            var ta = (yMin - y1) / dy
+            var tb = (yMax - y1) / dy
+            if (ta > tb) { val tmp = ta; ta = tb; tb = tmp }
+            if (ta > tLoRaw) tLoRaw = ta
+            if (tb < tHiRaw) tHiRaw = tb
+        } else if (y1 < yMin || y1 > yMax) {
+            tHiRaw = -1f // segment is horizontal and entirely outside the Y slab
+        }
+
+        // No overlap with the square at all inside [0,1] -> the square
+        // doesn't clip this bounded segment; keep it whole.
+        if (tLoRaw > tHiRaw || tHiRaw < 0f || tLoRaw > 1f) {
             clipPieceA[0] = x1; clipPieceA[1] = y1; clipPieceA[2] = x2; clipPieceA[3] = y2
             return 1
         }
 
-        val b = 2f * (fx * dx + fy * dy)
-        val c = fx * fx + fy * fy - zoneR * zoneR
-        val disc = b * b - 4f * a * c
-        if (disc < 0f) {
-            clipPieceA[0] = x1; clipPieceA[1] = y1; clipPieceA[2] = x2; clipPieceA[3] = y2
-            return 1
-        }
-
-        val sqrtDisc = kotlin.math.sqrt(disc)
-        val rawT1 = (-b - sqrtDisc) / (2f * a)
-        val rawT2 = (-b + sqrtDisc) / (2f * a)
-        // Intersection interval doesn't overlap [0,1] at all -> the circle
-        // doesn't actually clip this bounded segment; keep it whole.
-        if (rawT2 < 0f || rawT1 > 1f) {
-            clipPieceA[0] = x1; clipPieceA[1] = y1; clipPieceA[2] = x2; clipPieceA[3] = y2
-            return 1
-        }
-
-        val tLo = rawT1.coerceIn(0f, 1f)
-        val tHi = rawT2.coerceIn(0f, 1f)
+        val tLo = tLoRaw.coerceIn(0f, 1f)
+        val tHi = tHiRaw.coerceIn(0f, 1f)
 
         var count = 0
         if (tLo > 0.0001f) {

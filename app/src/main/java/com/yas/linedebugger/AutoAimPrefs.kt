@@ -164,7 +164,7 @@ object AutoAimPrefs {
     const val DEFAULT_OUTLIER_TRIM_K = 2.8f
 
     const val CIRCLE_DIAMETER_MIN = 40
-    const val CIRCLE_DIAMETER_MAX = 220
+    const val CIRCLE_DIAMETER_MAX = 440
     const val DEFAULT_CIRCLE_DIAMETER = 119
 
     const val CIRCLE_ALPHA_MIN = 20
