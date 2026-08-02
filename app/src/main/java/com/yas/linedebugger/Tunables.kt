@@ -19,7 +19,7 @@ object Tunables {
     @Volatile var ballErodeRadius: Int = AutoAimPrefs.DEFAULT_BALL_ERODE_RADIUS   // erosion radius that erases the thin line, leaves ball cores
     @Volatile var ballDilateGrow: Int = AutoAimPrefs.DEFAULT_BALL_DILATE_GROW     // extra growth to restore the ball's true footprint
     @Volatile var minLinePixels: Int = AutoAimPrefs.DEFAULT_MIN_LINE_PIXELS       // below this many surviving pixels, refuse to guess an angle
-    @Volatile var outlierTrimK: Float = AutoAimPrefs.DEFAULT_OUTLIER_TRIM_K       // outlier-rejection threshold, in std-devs of perpendicular residual
+    @Volatile var outlierTrimK: Float = AutoAimPrefs.DEFAULT_OUTLIER_TRIM_K       // IRLS Tukey biweight reject-width multiplier, in MADs of perpendicular residual
 
     // --- Detection: color strategy (bug #2 — green/brown/yellow guideline
     //     recovery). Three selectable candidate-pixel classifiers, all

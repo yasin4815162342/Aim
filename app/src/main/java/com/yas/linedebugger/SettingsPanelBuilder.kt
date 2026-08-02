@@ -197,9 +197,10 @@ object SettingsPanelBuilder {
             Tunables.minLinePixels = it; AutoAimPrefs.setMinLinePixels(it)
         }
         floatSlider(
-            "Outlier trim K", AutoAimPrefs.OUTLIER_TRIM_K_MIN, AutoAimPrefs.OUTLIER_TRIM_K_MAX,
+            "Outlier reject K (IRLS)", AutoAimPrefs.OUTLIER_TRIM_K_MIN, AutoAimPrefs.OUTLIER_TRIM_K_MAX,
             Tunables.outlierTrimK, 55, { "%.1f".format(Locale.US, it) }
         ) { Tunables.outlierTrimK = it; AutoAimPrefs.setOutlierTrimK(it) }
+        hint("How many residual MADs from the fit a pixel can sit before IRLS zeroes its weight. Lower = rejects contamination faster but can shave a clean line thin; higher = keeps more marginal pixels.")
 
         // ==================== Detection: color strategy (bug #2) ====================
         // Green/brown/yellow guideline recovery. Three selectable

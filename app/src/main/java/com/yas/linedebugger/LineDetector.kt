@@ -301,35 +301,23 @@ object LineDetector {
             }
         }
 
-        // Stage B: weighted RANSAC. Catches whatever slipped past the width
-        // filter (e.g. a short arc briefly near-tangent to the true line).
-        // Unlike a single least-squares fit, RANSAC never uses a
-        // contamination-biased fit as its own outlier yardstick — each
-        // candidate line is scored by direct pixel agreement, so it stays
-        // correct even with a large minority of junk pixels in the set.
-        val inlierThreshold = (residualStd(xs, ys, ws, fit.angle, fit.meanX, fit.meanY) * 1.8)
-            .coerceIn(1.2, 6.0).toFloat()
-        val inlierIdx = ransacLineFit(xs, ys, ws, inlierDistPx = inlierThreshold)
-        if (inlierIdx.size >= scaledMinLinePixels()) {
-            val rx = ArrayList<Int>(inlierIdx.size)
-            val ry = ArrayList<Int>(inlierIdx.size)
-            val rw = ArrayList<Float>(inlierIdx.size)
-            for (idx in inlierIdx) { rx.add(xs[idx]); ry.add(ys[idx]); rw.add(ws[idx]) }
+        // Stage B: IRLS with a Tukey biweight redescending M-estimator.
+        // Continuous reweight-and-refit (no discrete hypothesis search), so
+        // a smoothly moving seed produces a smoothly moving result — no
+        // stuck-then-snaps angle jumps. Each iteration's robust scale is the
+        // current residual MAD, so the reject width tracks actual line
+        // thickness automatically. Points with residual beyond the
+        // redescending cutoff land at exactly zero weight, which is also
+        // this stage's outlier trim — no separate hard-threshold pass needed.
+        val (irlsFit, keptIdx) = irlsTukeyFit(xs, ys, ws, fit.angle, fit.meanX, fit.meanY)
+        if (keptIdx.size >= scaledMinLinePixels()) {
+            val rx = ArrayList<Int>(keptIdx.size)
+            val ry = ArrayList<Int>(keptIdx.size)
+            val rw = ArrayList<Float>(keptIdx.size)
+            for (idx in keptIdx) { rx.add(xs[idx]); ry.add(ys[idx]); rw.add(ws[idx]) }
             xs.clear(); ys.clear(); ws.clear()
             xs.addAll(rx); ys.addAll(ry); ws.addAll(rw)
-            fit = computeFit(xs, ys, ws)
-        }
-
-        // Stage C: one final light std-dev trim — now that gross
-        // contamination is gone, this only shaves anti-aliasing /
-        // quantization noise, which is what it was originally designed for.
-        run {
-            val (tx, ty, tw) = trimOutliersWeighted(xs, ys, ws, fit.angle, fit.meanX, fit.meanY)
-            if (tx.size >= scaledMinLinePixels()) {
-                xs.clear(); ys.clear(); ws.clear()
-                xs.addAll(tx); ys.addAll(ty); ws.addAll(tw)
-                fit = computeFit(xs, ys, ws)
-            }
+            fit = irlsFit
         }
 
         totalW = fit.totalW
@@ -639,37 +627,8 @@ object LineDetector {
         return 0.5 * atan2(2 * sxy, sxx - syy)
     }
 
-    private fun trimOutliersWeighted(
-        xs: List<Int>, ys: List<Int>, ws: List<Float>,
-        angle: Double, mx: Double, my: Double
-    ): Triple<ArrayList<Int>, ArrayList<Int>, ArrayList<Float>> {
-        val dirX = cos(angle); val dirY = sin(angle)
-        val residuals = DoubleArray(xs.size)
-        for (i in xs.indices) {
-            residuals[i] = abs(-(xs[i] - mx) * dirY + (ys[i] - my) * dirX)
-        }
-        val meanR = residuals.average()
-        var varR = 0.0
-        for (v in residuals) { val d = v - meanR; varR += d * d }
-        varR /= residuals.size
-        val stdR = sqrt(varR)
-        val threshold = stdR * Tunables.outlierTrimK
-
-        val outXs = ArrayList<Int>()
-        val outYs = ArrayList<Int>()
-        val outWs = ArrayList<Float>()
-        for (i in xs.indices) {
-            if (stdR < 1e-6 || residuals[i] <= threshold) {
-                outXs.add(xs[i])
-                outYs.add(ys[i])
-                outWs.add(ws[i])
-            }
-        }
-        return Triple(outXs, outYs, outWs)
-    }
-
     // ------------------------------------------------------------------
-    // Robust refit helpers (local width filter + weighted RANSAC)
+    // Robust refit helpers (local width filter + IRLS Tukey biweight)
     // ------------------------------------------------------------------
 
     private data class FitState(
@@ -694,23 +653,6 @@ object LineDetector {
         }
         val angle = if (xs.size >= 2) weightedFitAngle(xs, ys, ws, meanX, meanY) else 0.0
         return FitState(totalW, meanX, meanY, angle)
-    }
-
-    /** Weighted perpendicular-residual std relative to a given fit — used to size the RANSAC inlier band to the actual line thickness instead of a fixed guess. */
-    private fun residualStd(
-        xs: List<Int>, ys: List<Int>, ws: List<Float>,
-        angle: Double, mx: Double, my: Double
-    ): Double {
-        val dirX = cos(angle); val dirY = sin(angle)
-        var sw = 0.0; var swr2 = 0.0
-        for (i in xs.indices) {
-            val dx = xs[i] - mx; val dy = ys[i] - my
-            val r = -dx * dirY + dy * dirX
-            val w = ws[i].toDouble()
-            sw += w
-            swr2 += w * r * r
-        }
-        return if (sw > 1e-6) sqrt(swr2 / sw) else 1.0
     }
 
     /**
@@ -774,53 +716,77 @@ object LineDetector {
     }
 
     /**
-     * Weighted RANSAC line fit. Returns the indices (into [xs]/[ys]) of the
-     * inlier set for the best-scoring line. Robust to a large minority of
-     * outlier pixels because it never uses a contamination-biased least-
-     * squares fit as its own reference — each candidate line is scored by
-     * direct pixel agreement instead. Fixed seed => deterministic, no
-     * frame-to-frame jitter from RNG alone.
+     * IRLS line fit with a Tukey biweight redescending M-estimator.
+     * Iteratively reweight-and-refit from [seedAngle]/[seedMx]/[seedMy]:
+     * each pass computes perpendicular residuals against the current fit,
+     * derives a robust scale from their median absolute deviation (MAD),
+     * and rescales every point's weight by the Tukey biweight curve —
+     * full weight near zero residual, smoothly falling to exactly zero
+     * beyond [Tunables.outlierTrimK] scaled MADs. Continuous by
+     * construction: no discrete candidate search, so a seed that moves
+     * smoothly frame to frame produces an output that moves smoothly too.
+     * Returns the converged fit plus the indices (into [xs]/[ys]) of
+     * points that still carry nonzero weight after convergence — points
+     * beyond the redescending cutoff are excluded here, which is this
+     * stage's outlier trim as a side effect of the last iteration.
      */
-    private fun ransacLineFit(
+    private fun irlsTukeyFit(
         xs: List<Int>, ys: List<Int>, ws: List<Float>,
-        iterations: Int = 50,
-        inlierDistPx: Float = 1.6f
-    ): IntArray {
+        seedAngle: Double, seedMx: Double, seedMy: Double,
+        iterations: Int = 5,
+        scaleFloorPx: Double = 0.35
+    ): Pair<FitState, IntArray> {
         val n = xs.size
-        if (n < 2) return IntArray(0)
-        val rnd = java.util.Random(0x5EEDL)
-        var bestCount = -1
-        var bestA = 0f; var bestB = 1f; var bestC = 0f
+        if (n < 2) return FitState(0f, seedMx, seedMy, seedAngle) to IntArray(n) { it }
+
+        var angle = seedAngle
+        var mx = seedMx
+        var my = seedMy
+        val tukeyW = DoubleArray(n) { ws[it].toDouble() }
+        val residuals = DoubleArray(n)
+        val absR = DoubleArray(n)
+
         repeat(iterations) {
-            val i1 = rnd.nextInt(n)
-            var i2 = rnd.nextInt(n)
-            var guard = 0
-            while (i2 == i1 && guard < 5) { i2 = rnd.nextInt(n); guard++ }
-            if (i2 == i1) return@repeat
-            val x1 = xs[i1].toFloat(); val y1 = ys[i1].toFloat()
-            val x2 = xs[i2].toFloat(); val y2 = ys[i2].toFloat()
-            val dx = x2 - x1; val dy = y2 - y1
-            val len = sqrt(dx * dx + dy * dy)
-            if (len < 3f) return@repeat // too close together => unstable sample
-            val a = -dy / len
-            val b = dx / len
-            val c = a * x1 + b * y1
-            var count = 0
+            val dirX = cos(angle); val dirY = sin(angle)
             for (i in 0 until n) {
-                val d = abs(a * xs[i] + b * ys[i] - c)
-                if (d <= inlierDistPx) count++
+                val dx = xs[i] - mx; val dy = ys[i] - my
+                val r = -dx * dirY + dy * dirX
+                residuals[i] = r
+                absR[i] = abs(r)
             }
-            if (count > bestCount) {
-                bestCount = count; bestA = a; bestB = b; bestC = c
+            val mad = absR.sortedArray()[n / 2]
+            val c = (mad * 1.4826).coerceAtLeast(scaleFloorPx) * Tunables.outlierTrimK
+
+            var sw = 0.0; var swx = 0.0; var swy = 0.0
+            for (i in 0 until n) {
+                val u = residuals[i] / c
+                val tw = if (abs(u) < 1.0) { val t = 1.0 - u * u; t * t } else 0.0
+                val fullW = tw * ws[i]
+                tukeyW[i] = fullW
+                sw += fullW
+                swx += fullW * xs[i]
+                swy += fullW * ys[i]
             }
+            if (sw < 1e-6) return@repeat
+            mx = swx / sw
+            my = swy / sw
+
+            var sxx = 0.0; var syy = 0.0; var sxy = 0.0
+            for (i in 0 until n) {
+                val dx = xs[i] - mx; val dy = ys[i] - my
+                val w = tukeyW[i]
+                sxx += w * dx * dx
+                syy += w * dy * dy
+                sxy += w * dx * dy
+            }
+            angle = 0.5 * atan2(2 * sxy, sxx - syy)
         }
-        if (bestCount < 0) return IntArray(0)
-        val inliers = ArrayList<Int>(bestCount)
-        for (i in 0 until n) {
-            val d = abs(bestA * xs[i] + bestB * ys[i] - bestC)
-            if (d <= inlierDistPx) inliers.add(i)
-        }
-        return inliers.toIntArray()
+
+        var totalW = 0f
+        for (w in tukeyW) totalW += w.toFloat()
+        val kept = ArrayList<Int>(n)
+        for (i in 0 until n) if (tukeyW[i] > 0.0) kept.add(i)
+        return FitState(totalW, mx, my, angle) to kept.toIntArray()
     }
 
     // ------------------------------------------------------------------
