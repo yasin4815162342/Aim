@@ -126,8 +126,8 @@ object OverlayController {
     // value once stopped), light smoothing at drag speed (kills jitter
     // without re-adding lag).
     private class OneEuroFilter(
-        val minCutoff: Double,
-        val beta: Double,
+        val minCutoff: () -> Double,
+        val beta: () -> Double,
         val dCutoff: Double = 1.0
     ) {
         private var xPrev: Double = 0.0
@@ -151,16 +151,25 @@ object OverlayController {
             val dx = (x - xPrev) / dt
             val edx = dxPrev + alpha(dCutoff, dt) * (dx - dxPrev)
             dxPrev = edx
-            val cutoff = minCutoff + beta * abs(edx)
+            val cutoff = minCutoff() + beta() * abs(edx)
             val xHat = xPrev + alpha(cutoff, dt) * (x - xPrev)
             xPrev = xHat
             return xHat
         }
     }
 
-    private val angleFilter = OneEuroFilter(minCutoff = 0.8, beta = 3.0)
-    private val offXFilter = OneEuroFilter(minCutoff = 1.0, beta = 0.03)
-    private val offYFilter = OneEuroFilter(minCutoff = 1.0, beta = 0.03)
+    private val angleFilter = OneEuroFilter(
+        minCutoff = { Tunables.angleMinCutoff.toDouble() },
+        beta = { Tunables.angleBeta.toDouble() }
+    )
+    private val offXFilter = OneEuroFilter(
+        minCutoff = { Tunables.offsetMinCutoff.toDouble() },
+        beta = { Tunables.offsetBeta.toDouble() }
+    )
+    private val offYFilter = OneEuroFilter(
+        minCutoff = { Tunables.offsetMinCutoff.toDouble() },
+        beta = { Tunables.offsetBeta.toDouble() }
+    )
     private var rawAngleUnwrapped: Double = 0.0
     private var lastRawAngle: Double = 0.0
     private var smoothAngle: Double = 0.0
@@ -802,6 +811,17 @@ object OverlayController {
                 offXFilter.reset(base.offsetX.toDouble())
                 offYFilter.reset(base.offsetY.toDouble())
                 smoothInit = true
+            } else if (!Tunables.smoothingEnabled) {
+                // Bypass: draw the raw per-frame detection directly, zero
+                // added lag. Filters are simply left unfed while this is
+                // on — re-enabling smoothing mid-session re-syncs from the
+                // current raw value within a frame or two rather than
+                // jumping from stale internal state.
+                smoothAngle = base.angleRad
+                smoothOffX = base.offsetX
+                smoothOffY = base.offsetY
+                lastRawAngle = base.angleRad
+                rawAngleUnwrapped = base.angleRad
             } else {
                 // Track the raw angle as a continuously-unwrapped scalar
                 // (shortest-path delta from the last raw sample, not the

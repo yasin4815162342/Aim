@@ -26,6 +26,25 @@ object Tunables {
     //     feeding the same downstream ball-removal + line-fit pipeline
     //     above. See LineDetector for the actual classifiers. ---
     @Volatile var detectionMode: Int = AutoAimPrefs.DEFAULT_DETECTION_MODE
+    // White mode: a pixel is a candidate if it's bright (> minBrightness,
+    // shared with the other modes) AND close to achromatic — i.e. R, G, B
+    // are all close together. max(r,g,b) - min(r,g,b) is that spread; a
+    // saturated color (including the green felt) has a large spread, a
+    // white/gray highlight has a small one. No hue math, no division.
+    @Volatile var whiteMaxSpread: Int = AutoAimPrefs.DEFAULT_WHITE_MAX_SPREAD
+
+    // --- Extended-line smoothing (One Euro, see OverlayController) ---
+    // smoothingEnabled=false draws the raw per-frame detection directly —
+    // zero added lag, but raw per-frame jitter comes back when the phone
+    // is still. minCutoff sets how heavily the value is smoothed at rest
+    // (higher = less resting lag, more resting jitter); beta sets how
+    // fast that smoothing backs off as the value starts moving (higher =
+    // snappier during a fast drag).
+    @Volatile var smoothingEnabled: Boolean = AutoAimPrefs.DEFAULT_SMOOTHING_ENABLED
+    @Volatile var angleMinCutoff: Float = AutoAimPrefs.DEFAULT_ANGLE_MIN_CUTOFF
+    @Volatile var angleBeta: Float = AutoAimPrefs.DEFAULT_ANGLE_BETA
+    @Volatile var offsetMinCutoff: Float = AutoAimPrefs.DEFAULT_OFFSET_MIN_CUTOFF
+    @Volatile var offsetBeta: Float = AutoAimPrefs.DEFAULT_OFFSET_BETA
     // "Felt" reference color in HSV. A pixel close to this reference in
     // hue AND saturation AND value is background and gets discarded;
     // differing enough in *any one* of the three lets it through — that's

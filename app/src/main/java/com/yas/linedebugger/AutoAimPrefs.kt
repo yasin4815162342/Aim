@@ -87,6 +87,12 @@ object AutoAimPrefs {
 
     // Detection: color strategy (bug #2)
     private const val KEY_DETECTION_MODE = "detection_mode"
+    private const val KEY_WHITE_MAX_SPREAD = "white_max_spread"
+    private const val KEY_SMOOTHING_ENABLED = "smoothing_enabled"
+    private const val KEY_ANGLE_MIN_CUTOFF = "angle_min_cutoff"
+    private const val KEY_ANGLE_BETA = "angle_beta"
+    private const val KEY_OFFSET_MIN_CUTOFF = "offset_min_cutoff"
+    private const val KEY_OFFSET_BETA = "offset_beta"
     private const val KEY_FELT_HUE_DEG = "felt_hue_deg"
     private const val KEY_FELT_HUE_TOLERANCE_DEG = "felt_hue_tolerance_deg"
     private const val KEY_FELT_SAT = "felt_sat"
@@ -243,8 +249,30 @@ object AutoAimPrefs {
     // Three selectable candidate-pixel classifiers — see LineDetector.
     const val DETECTION_MODE_HSV = 0      // new primary: hue/sat/value distance from a felt (+ optional rail) reference
     const val DETECTION_MODE_LEGACY = 1   // original red/green-diff filter, unchanged, kept as a fallback
-    const val DETECTION_MODE_HYBRID = 2   // candidate if EITHER of the above would accept it
+    const val DETECTION_MODE_WHITE = 2    // fastest: bright + low R/G/B spread only — purpose-built for a white cue line on green felt
     const val DEFAULT_DETECTION_MODE = DETECTION_MODE_HSV
+
+    const val WHITE_MAX_SPREAD_MIN = 0
+    const val WHITE_MAX_SPREAD_MAX = 255
+    const val DEFAULT_WHITE_MAX_SPREAD = 40   // max(r,g,b) - min(r,g,b) allowed; low spread = achromatic/white
+
+    // ---- Extended-line smoothing (One Euro) ----
+    // Same defaults that were previously hardcoded directly in
+    // OverlayController — now live-tunable instead of requiring a
+    // rebuild to test a different feel.
+    const val DEFAULT_SMOOTHING_ENABLED = true   // false = draw the raw per-frame detection, no filtering at all
+    const val ANGLE_MIN_CUTOFF_MIN = 0.1f
+    const val ANGLE_MIN_CUTOFF_MAX = 5f
+    const val DEFAULT_ANGLE_MIN_CUTOFF = 0.8f
+    const val ANGLE_BETA_MIN = 0f
+    const val ANGLE_BETA_MAX = 20f
+    const val DEFAULT_ANGLE_BETA = 3f
+    const val OFFSET_MIN_CUTOFF_MIN = 0.1f
+    const val OFFSET_MIN_CUTOFF_MAX = 5f
+    const val DEFAULT_OFFSET_MIN_CUTOFF = 1f
+    const val OFFSET_BETA_MIN = 0f
+    const val OFFSET_BETA_MAX = 1f
+    const val DEFAULT_OFFSET_BETA = 0.03f
 
     const val DEFAULT_FELT_HUE_DEG = 115f
     const val DEFAULT_FELT_HUE_TOLERANCE_DEG = 40f
@@ -433,6 +461,24 @@ object AutoAimPrefs {
     fun getDetectionMode() = prefs.getInt(KEY_DETECTION_MODE, DEFAULT_DETECTION_MODE)
     fun setDetectionMode(v: Int) { prefs.edit().putInt(KEY_DETECTION_MODE, v).apply() }
 
+    fun getWhiteMaxSpread() = prefs.getInt(KEY_WHITE_MAX_SPREAD, DEFAULT_WHITE_MAX_SPREAD)
+    fun setWhiteMaxSpread(v: Int) { prefs.edit().putInt(KEY_WHITE_MAX_SPREAD, v).apply() }
+
+    fun isSmoothingEnabled() = prefs.getBoolean(KEY_SMOOTHING_ENABLED, DEFAULT_SMOOTHING_ENABLED)
+    fun setSmoothingEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_SMOOTHING_ENABLED, v).apply() }
+
+    fun getAngleMinCutoff() = prefs.getFloat(KEY_ANGLE_MIN_CUTOFF, DEFAULT_ANGLE_MIN_CUTOFF)
+    fun setAngleMinCutoff(v: Float) { prefs.edit().putFloat(KEY_ANGLE_MIN_CUTOFF, v).apply() }
+
+    fun getAngleBeta() = prefs.getFloat(KEY_ANGLE_BETA, DEFAULT_ANGLE_BETA)
+    fun setAngleBeta(v: Float) { prefs.edit().putFloat(KEY_ANGLE_BETA, v).apply() }
+
+    fun getOffsetMinCutoff() = prefs.getFloat(KEY_OFFSET_MIN_CUTOFF, DEFAULT_OFFSET_MIN_CUTOFF)
+    fun setOffsetMinCutoff(v: Float) { prefs.edit().putFloat(KEY_OFFSET_MIN_CUTOFF, v).apply() }
+
+    fun getOffsetBeta() = prefs.getFloat(KEY_OFFSET_BETA, DEFAULT_OFFSET_BETA)
+    fun setOffsetBeta(v: Float) { prefs.edit().putFloat(KEY_OFFSET_BETA, v).apply() }
+
     fun getFeltHueDeg() = prefs.getFloat(KEY_FELT_HUE_DEG, DEFAULT_FELT_HUE_DEG)
     fun setFeltHueDeg(v: Float) { prefs.edit().putFloat(KEY_FELT_HUE_DEG, v).apply() }
 
@@ -544,6 +590,12 @@ object AutoAimPrefs {
         Tunables.captureScale = getCaptureScale()
 
         Tunables.detectionMode = getDetectionMode()
+        Tunables.whiteMaxSpread = getWhiteMaxSpread()
+        Tunables.smoothingEnabled = isSmoothingEnabled()
+        Tunables.angleMinCutoff = getAngleMinCutoff()
+        Tunables.angleBeta = getAngleBeta()
+        Tunables.offsetMinCutoff = getOffsetMinCutoff()
+        Tunables.offsetBeta = getOffsetBeta()
         Tunables.feltHueDeg = getFeltHueDeg()
         Tunables.feltHueToleranceDeg = getFeltHueToleranceDeg()
         Tunables.feltSat = getFeltSat()

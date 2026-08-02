@@ -29,7 +29,7 @@ object SettingsPanelBuilder {
     private fun detectionModeLabel(mode: Int): String = when (mode) {
         AutoAimPrefs.DETECTION_MODE_HSV -> "HSV (new, primary)"
         AutoAimPrefs.DETECTION_MODE_LEGACY -> "Legacy RGB (fallback)"
-        AutoAimPrefs.DETECTION_MODE_HYBRID -> "Hybrid (either method)"
+        AutoAimPrefs.DETECTION_MODE_WHITE -> "White (fastest, white-only)"
         else -> "unknown"
     }
 
@@ -211,7 +211,7 @@ object SettingsPanelBuilder {
             setTextColor(Color.WHITE)
         }
         root.addView(modeLabel)
-        hint("HSV is the new default — hue/saturation/value distance from the felt (and optional rail) reference below. Legacy is the original red/green-diff filter, kept as a no-regression fallback. Hybrid accepts a pixel either method would.")
+        hint("HSV is the new default — hue/saturation/value distance from the felt (and optional rail) reference below. Legacy is the original red/green-diff filter, kept as a no-regression fallback. White ignores color reference matching entirely — it only asks \"is this pixel bright and close to gray/white\", which is all a cue-ball guideline needs. Cheapest of the three; use it if your line is always white.")
         val modeRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
         fun modeButton(label: String, mode: Int) {
             modeRow.addView(Button(context).apply {
@@ -227,8 +227,14 @@ object SettingsPanelBuilder {
         }
         modeButton("HSV", AutoAimPrefs.DETECTION_MODE_HSV)
         modeButton("Legacy", AutoAimPrefs.DETECTION_MODE_LEGACY)
-        modeButton("Hybrid", AutoAimPrefs.DETECTION_MODE_HYBRID)
+        modeButton("White", AutoAimPrefs.DETECTION_MODE_WHITE)
         root.addView(modeRow)
+
+        sectionLabel("White Line Mode")
+        hint("A pixel counts as candidate line if it's brighter than \"Min brightness\" above AND max(R,G,B) - min(R,G,B) is at or below this spread. Saturated colors — green felt, colored balls, rails — have a large spread; a white/gray highlight has a small one. Raise this if a slightly off-white or shadowed part of the line is getting missed; lower it if a bright ball or rail edge is leaking in.")
+        intSlider("White max spread", AutoAimPrefs.WHITE_MAX_SPREAD_MIN, AutoAimPrefs.WHITE_MAX_SPREAD_MAX, Tunables.whiteMaxSpread) {
+            Tunables.whiteMaxSpread = it; AutoAimPrefs.setWhiteMaxSpread(it)
+        }
 
         sectionLabel("Felt Color Reference (HSV mode)")
         hint("A pixel close to this hue AND saturation AND value is felt and gets discarded. Differing enough in hue, OR in saturation, OR in brightness alone is enough to survive as a candidate — that's what lets a green guideline through even though its hue matches the felt's.")
@@ -274,6 +280,28 @@ object SettingsPanelBuilder {
         intSlider("Rail brightness tolerance", 0, 255, Tunables.railValTolerance) {
             Tunables.railValTolerance = it; AutoAimPrefs.setRailValTolerance(it)
         }
+
+        sectionLabel("Smoothing (Extended Line)")
+        hint("One Euro filter smooths the displayed angle and position so a genuinely-still line doesn't jitter pixel to pixel. Off = raw detection every frame, zero added lag, but jitter returns when the phone is still. Min cutoff sets resting smoothness (higher = less resting lag, more resting jitter); Beta sets how fast that smoothing backs off once the line starts moving (higher = snappier while dragging).")
+        checkbox("Smoothing enabled", Tunables.smoothingEnabled) {
+            Tunables.smoothingEnabled = it; AutoAimPrefs.setSmoothingEnabled(it)
+        }
+        floatSlider(
+            "Angle min cutoff", AutoAimPrefs.ANGLE_MIN_CUTOFF_MIN, AutoAimPrefs.ANGLE_MIN_CUTOFF_MAX,
+            Tunables.angleMinCutoff, 98, { "%.2f".format(Locale.US, it) }
+        ) { Tunables.angleMinCutoff = it; AutoAimPrefs.setAngleMinCutoff(it) }
+        floatSlider(
+            "Angle beta", AutoAimPrefs.ANGLE_BETA_MIN, AutoAimPrefs.ANGLE_BETA_MAX,
+            Tunables.angleBeta, 200, { "%.2f".format(Locale.US, it) }
+        ) { Tunables.angleBeta = it; AutoAimPrefs.setAngleBeta(it) }
+        floatSlider(
+            "Offset min cutoff", AutoAimPrefs.OFFSET_MIN_CUTOFF_MIN, AutoAimPrefs.OFFSET_MIN_CUTOFF_MAX,
+            Tunables.offsetMinCutoff, 98, { "%.2f".format(Locale.US, it) }
+        ) { Tunables.offsetMinCutoff = it; AutoAimPrefs.setOffsetMinCutoff(it) }
+        floatSlider(
+            "Offset beta", AutoAimPrefs.OFFSET_BETA_MIN, AutoAimPrefs.OFFSET_BETA_MAX,
+            Tunables.offsetBeta, 200, { "%.3f".format(Locale.US, it) }
+        ) { Tunables.offsetBeta = it; AutoAimPrefs.setOffsetBeta(it) }
 
         // ==================== Ray Circle ====================
         sectionLabel("Ray Circle")

@@ -148,7 +148,7 @@ object LineDetector {
             brightness[i] = bright
 
             var legacyCandidate = false
-            if (mode == AutoAimPrefs.DETECTION_MODE_LEGACY || mode == AutoAimPrefs.DETECTION_MODE_HYBRID) {
+            if (mode == AutoAimPrefs.DETECTION_MODE_LEGACY) {
                 val isGreenHue = (g - r) > Tunables.greenDiff && (g - b) > Tunables.greenDiff
                 val isFelt = isGreenHue && bright < Tunables.greenLineBrightness
                 legacyCandidate = !isFelt && bright > Tunables.minBrightness
@@ -156,7 +156,7 @@ object LineDetector {
 
             var hsvCandidate = false
             var railRejected = false
-            if (mode == AutoAimPrefs.DETECTION_MODE_HSV || mode == AutoAimPrefs.DETECTION_MODE_HYBRID) {
+            if (mode == AutoAimPrefs.DETECTION_MODE_HSV) {
                 val hsv = rgbToHsv(r, g, b)
                 val h = hsv[0]; val s = hsv[1]; val v = hsv[2]
 
@@ -176,9 +176,25 @@ object LineDetector {
                 hsvCandidate = !looksLikeFelt && !looksLikeRail && bright > Tunables.minBrightness
             }
 
+            // White mode: purpose-built for "bright white line on dim green
+            // felt" and nothing else. No hue conversion, no division, no
+            // reference-color distance check — just two integer ops reused
+            // against the brightness this loop already computed above.
+            // A saturated color (including the green felt, and colored
+            // balls) has R/G/B spread apart; white/gray does not. That
+            // alone is enough to separate "white highlight" from "anything
+            // else on the table" without needing to know what that
+            // anything-else's color actually is.
+            var whiteCandidate = false
+            if (mode == AutoAimPrefs.DETECTION_MODE_WHITE) {
+                val minC = minOf(r, g, b)
+                val spread = bright - minC
+                whiteCandidate = bright > Tunables.minBrightness && spread <= Tunables.whiteMaxSpread
+            }
+
             isCandidate[i] = when (mode) {
                 AutoAimPrefs.DETECTION_MODE_LEGACY -> legacyCandidate
-                AutoAimPrefs.DETECTION_MODE_HYBRID -> legacyCandidate || hsvCandidate
+                AutoAimPrefs.DETECTION_MODE_WHITE -> whiteCandidate
                 else -> hsvCandidate
             }
             rejectedAsRail[i] = !isCandidate[i] && railRejected
