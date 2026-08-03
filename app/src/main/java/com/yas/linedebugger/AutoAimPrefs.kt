@@ -122,9 +122,9 @@ object AutoAimPrefs {
     private const val KEY_MANUAL_DASHED_LINE_ENABLED = "manual_dashed_line_enabled"
     private const val KEY_MANUAL_GHOST_RAIL_ENABLED = "manual_ghost_rail_enabled"
 
-    // Manual KISS / DEST controller (kiss-shot assist)
+    // Manual KISS / DEST controller (kiss-shot + combo-shot assist)
     private const val KEY_MANUAL_KISS_ENABLED = "manual_kiss_enabled"
-    private const val KEY_MANUAL_KISS_ACTIVE = "manual_kiss_active"
+    private const val KEY_MANUAL_DEST_MODE = "manual_dest_mode"
     private const val KEY_MANUAL_KISS_RADIUS_SCALE_PERCENT = "manual_kiss_radius_scale_percent"
     private const val KEY_MANUAL_KISS_THROW_ANGLE_DEG = "manual_kiss_throw_angle_deg"
     private const val KEY_MANUAL_KISS_SIDE_LOCK = "manual_kiss_side_lock"
@@ -341,12 +341,17 @@ object AutoAimPrefs {
     // band-around-the-line look instead of two parallel strokes.
     const val DEFAULT_MANUAL_BAND_STYLE_ENABLED = false
 
-    // ---- Manual KISS / DEST controller (kiss-shot assist) ----
+    // ---- Manual KISS / DEST controller (kiss-shot + combo-shot assist) ----
     const val DEFAULT_MANUAL_KISS_ENABLED = false
-    // Defaults to active so turning the checkbox on behaves like it always
-    // did before the tap-to-toggle existed — starts in kiss mode (green),
-    // not silently parked off (red).
-    const val DEFAULT_MANUAL_KISS_ACTIVE = true
+    // DEST's 3-way tap-cycle: off (red) -> kiss shot (green, see KissShot)
+    // -> combo shot (orange, see ComboShot) -> back to off.
+    const val DEST_MODE_OFF = 0
+    const val DEST_MODE_KISS = 1
+    const val DEST_MODE_COMBO = 2
+    // Defaults to kiss mode so turning the checkbox on behaves like it
+    // always did before the 3-way cycle existed — starts in kiss mode
+    // (green), not silently parked off (red).
+    const val DEFAULT_MANUAL_DEST_MODE = DEST_MODE_KISS
 
     // Tweak 1 — ball-size calibration for the kiss solve only (percent of
     // the shared ghost-ball diameter). Kept separate from the shared
@@ -579,8 +584,8 @@ object AutoAimPrefs {
 
     fun isManualKissEnabled() = prefs.getBoolean(KEY_MANUAL_KISS_ENABLED, DEFAULT_MANUAL_KISS_ENABLED)
     fun setManualKissEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_KISS_ENABLED, v).apply() }
-    fun isManualKissActive() = prefs.getBoolean(KEY_MANUAL_KISS_ACTIVE, DEFAULT_MANUAL_KISS_ACTIVE)
-    fun setManualKissActive(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_KISS_ACTIVE, v).apply() }
+    fun getManualDestMode() = prefs.getInt(KEY_MANUAL_DEST_MODE, DEFAULT_MANUAL_DEST_MODE)
+    fun setManualDestMode(v: Int) { prefs.edit().putInt(KEY_MANUAL_DEST_MODE, v).apply() }
 
     fun getManualKissRadiusScalePercent() =
         prefs.getFloat(KEY_MANUAL_KISS_RADIUS_SCALE_PERCENT, DEFAULT_MANUAL_KISS_RADIUS_SCALE_PERCENT)
@@ -667,7 +672,7 @@ object AutoAimPrefs {
         Tunables.manualGhostRailEnabled = isManualGhostRailEnabled()
 
         Tunables.manualKissEnabled = isManualKissEnabled()
-        Tunables.manualKissActive = isManualKissActive()
+        Tunables.manualDestMode = getManualDestMode()
         Tunables.manualKissRadiusScalePercent = getManualKissRadiusScalePercent()
         Tunables.manualKissThrowAngleDeg = getManualKissThrowAngleDeg()
         Tunables.manualKissSideLock = getManualKissSideLock()

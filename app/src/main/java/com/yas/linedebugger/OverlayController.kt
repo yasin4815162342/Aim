@@ -728,10 +728,10 @@ object OverlayController {
         drawView?.invalidate()
     }
 
-    /** Called by the "Enable Kiss Shot assist" checkbox. Same
-     * safe-to-call-anytime contract as [setManualControllerEnabled].
-     * Kiss shot reuses CUE (moving ball's approach point) and TARGET
-     * (the ball it kisses off of) — DEST is the only extra point. */
+    /** Called by the "Enable Kiss Shot / Combo Shot assist" checkbox. Same
+     * safe-to-call-anytime contract as [setManualControllerEnabled]. Both
+     * modes reuse CUE (the striking ball's approach point) and TARGET (the
+     * ball being hit) — DEST is the only extra point. */
     fun setManualKissEnabled(enabled: Boolean) {
         Tunables.manualKissEnabled = enabled
         AutoAimPrefs.setManualKissEnabled(enabled)
@@ -739,18 +739,29 @@ object OverlayController {
         drawView?.invalidate()
     }
 
-    /** Toggled by tapping (not dragging) the DEST marker — see
-     * ManualHandle's onTapped, wired up in [attachManualDestHandle]. Unlike
-     * [setManualKissEnabled], this never touches the handle itself: DEST
-     * stays right where it is, it just switches the trajectory between the
-     * kiss-shot solve (green) and the plain CUE/TARGET bank shot (red),
-     * so nobody has to dig into settings mid-shot to switch back and
-     * forth. */
-    fun setManualKissActive(active: Boolean) {
-        Tunables.manualKissActive = active
-        AutoAimPrefs.setManualKissActive(active)
+    /** Sets DEST's mode directly (see AutoAimPrefs.DEST_MODE_*). Toggled by
+     * tapping (not dragging) the DEST marker — see ManualHandle's onTapped,
+     * wired up in [attachManualDestHandle] via [cycleManualDestMode].
+     * Unlike [setManualKissEnabled], this never touches the handle itself:
+     * DEST stays right where it is, it just switches which trajectory is
+     * showing — kiss shot (green, see KissShot), combo shot (orange, see
+     * ComboShot), or a plain CUE/TARGET bank shot (red, off) — so nobody
+     * has to dig into settings mid-shot to switch back and forth. */
+    fun setManualDestMode(mode: Int) {
+        Tunables.manualDestMode = mode
+        AutoAimPrefs.setManualDestMode(mode)
         manualDestHandle?.refreshVisual()
         drawView?.invalidate()
+    }
+
+    /** DEST's tap-to-cycle: off -> kiss -> combo -> off -> ... */
+    fun cycleManualDestMode() {
+        val next = when (Tunables.manualDestMode) {
+            AutoAimPrefs.DEST_MODE_KISS -> AutoAimPrefs.DEST_MODE_COMBO
+            AutoAimPrefs.DEST_MODE_COMBO -> AutoAimPrefs.DEST_MODE_OFF
+            else -> AutoAimPrefs.DEST_MODE_KISS
+        }
+        setManualDestMode(next)
     }
 
     private fun attachManualDestHandle() {
@@ -765,7 +776,7 @@ object OverlayController {
         manualDestHandle = ManualHandle(
             svc, wm, screenWidth, screenHeight, ManualRole.DEST, manualDestX, manualDestY,
             onMoved = { x, y -> manualDestX = x; manualDestY = y; drawView?.invalidate() },
-            onTapped = { setManualKissActive(!Tunables.manualKissActive) }
+            onTapped = { cycleManualDestMode() }
         )
 
         applyHandleVisibility()
@@ -1387,10 +1398,11 @@ private class ManualHandle(
  * Visual for a manual handle — a big translucent hitbox (red circle for
  * TARGET, black square for CUE) plus a ball-diameter ghost-ball outline
  * with a red center dot for CUE/TARGET. DEST is its own thing: a small
- * dot (no ball involved, it's a pocket aim point) that's green when
- * kiss-shot mode is active and red when parked off — tap it to toggle
- * (see ManualHandle's onTapped). It also gets a smaller touch hitbox
- * than CUE/TARGET — see DEST_HANDLE_HITBOX_PX.
+ * dot (no ball involved, it's a pocket aim point) that cycles red (off) ->
+ * green (kiss shot) -> orange (combo shot) -> red — tap it to cycle (see
+ * ManualHandle's onTapped and OverlayController.cycleManualDestMode). It
+ * also gets a smaller touch hitbox than CUE/TARGET — see
+ * DEST_HANDLE_HITBOX_PX.
  */
 private class ManualHandleView(
     context: Context,
@@ -1416,15 +1428,19 @@ private class ManualHandleView(
         style = Paint.Style.FILL
         color = Color.RED
     }
-    // DEST's own dot color reflects whether tapping it has kiss-shot mode
-    // active (green) or parked/off (red) — see Tunables.manualKissActive
-    // and ManualHandle's onTapped. Separate Paints from centerDot above so
-    // CUE/TARGET's ghost-ball dot (always red) is never affected.
-    private val destActiveDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    // DEST's own dot color reflects its current mode — see
+    // Tunables.manualDestMode and ManualHandle's onTapped. Separate Paints
+    // from centerDot above so CUE/TARGET's ghost-ball dot (always red) is
+    // never affected.
+    private val destKissDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.GREEN
     }
-    private val destInactiveDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val destComboDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.rgb(255, 165, 0) // orange
+    }
+    private val destOffDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.RED
     }
@@ -1441,8 +1457,12 @@ private class ManualHandleView(
 
         if (role == ManualRole.DEST) {
             // Just a pocket-aim dot — no ball, no ghost ring. Color shows
-            // whether kiss-shot mode is currently active (tap to toggle).
-            val dot = if (Tunables.manualKissActive) destActiveDot else destInactiveDot
+            // the current mode (tap to cycle).
+            val dot = when (Tunables.manualDestMode) {
+                AutoAimPrefs.DEST_MODE_KISS -> destKissDot
+                AutoAimPrefs.DEST_MODE_COMBO -> destComboDot
+                else -> destOffDot
+            }
             canvas.drawCircle(cx, cy, 16f, dot)
             canvas.drawCircle(cx, cy, 16f, outline)
             return
@@ -1583,14 +1603,20 @@ class DrawOverlayView(context: Context) : View(context) {
         style = Paint.Style.FILL; color = Color.RED
     }
 
-    // Kiss-shot assist: a tiny contact dot on TARGET's edge (kept small on
-    // purpose — a few pixels is plenty for aiming accuracy and a big marker
-    // just gets in the way). The two guide lines (CUE→ghost, ghost→DEST) no
-    // longer have their own paint — they're drawn with manualBorderPaint/
-    // manualCenterPaint below, same color/width/opacity/dashing as the
-    // CUE/TARGET line, just without the double-line flanks.
+    // Kiss-shot / combo-shot assist: a tiny contact dot on TARGET's edge
+    // (kept small on purpose — a few pixels is plenty for aiming accuracy
+    // and a big marker just gets in the way), colored to match its mode
+    // the same way DEST itself is. The guide lines (CUE→ghost, and either
+    // ghost→DEST for kiss or TARGET→[bend→]DEST for combo) don't have
+    // their own paint — they're drawn with manualBorderPaint/
+    // manualCenterPaint (and manualBankBorderPaint/manualBankCenterPaint
+    // for combo's post-bank segment) below, same color/width/opacity/
+    // dashing as the CUE/TARGET line, just without the double-line flanks.
     private val kissContactDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL; color = Color.GREEN
+    }
+    private val comboContactDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL; color = Color.rgb(255, 165, 0) // orange
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -2059,21 +2085,26 @@ class DrawOverlayView(context: Context) : View(context) {
         manualMarkerRing.alpha = (255 * alphaScale).toInt()
         manualMarkerDot.alpha = (255 * alphaScale).toInt()
 
-        // Whether kiss-shot mode currently owns the trajectory — DEST
-        // exists (manualKissEnabled) AND has been tapped active (green).
-        // When true, the plain CUE→TARGET line and the bank walk below
-        // both stand down in favor of the green kiss guide, exactly like
-        // toggling kiss off hands the trajectory back to them.
-        val kissActive = Tunables.manualKissEnabled && Tunables.manualKissActive
+        // Which of DEST's modes currently owns the trajectory — DEST must
+        // exist (manualKissEnabled) AND be cycled to kiss or combo (not
+        // parked off). When either is active, the plain CUE→TARGET line
+        // and the bank walk below both stand down in favor of that mode's
+        // own guide, exactly like cycling DEST to off hands the trajectory
+        // back to them.
+        val destMode = if (Tunables.manualKissEnabled) Tunables.manualDestMode else AutoAimPrefs.DEST_MODE_OFF
+        val kissActive = destMode == AutoAimPrefs.DEST_MODE_KISS
+        val comboActive = destMode == AutoAimPrefs.DEST_MODE_COMBO
+        val destOwnsTrajectory = kissActive || comboActive
 
         // ---- CUE → TARGET aim line (bank/cut mode only) ----
-        // Skipped while kiss-shot mode is active — it draws its own green
-        // guide below instead, and this line + its double/band lines
-        // would otherwise stay visible underneath it, cluttering the view.
+        // Skipped while kiss-shot or combo-shot mode is active — each draws
+        // its own guide below instead, and this line + its double/band
+        // lines would otherwise stay visible underneath it, cluttering the
+        // view.
         val startT = halfBall.coerceAtMost(len)
         val centerEndT = len + halfBall
         val doubleEndT = (len - halfBall).coerceAtLeast(startT)
-        if ((centerEndT - startT) > 1f && !kissActive) {
+        if ((centerEndT - startT) > 1f && !destOwnsTrajectory) {
             val startNearX = cueX + dx * startT
             val startNearY = cueY + dy * startT
             val endNearX = cueX + dx * centerEndT
@@ -2108,11 +2139,11 @@ class DrawOverlayView(context: Context) : View(context) {
         // and a bank shot. CUE is still just the moving ball's approach
         // point. So this replaces the bank branch below entirely rather
         // than running alongside it — but only while DEST is actually
-        // toggled active (green). manualKissEnabled just means DEST
-        // *exists*; tapping it active/inactive (manualKissActive) is what
-        // actually switches between kiss and plain bank trajectories, so
-        // you're never forced to leave the settings panel to flip back and
-        // forth mid-session.
+        // cycled to kiss mode (green). manualKissEnabled just means DEST
+        // *exists*; tapping it to cycle its mode (manualDestMode) is what
+        // actually switches between kiss, combo, and plain bank
+        // trajectories, so you're never forced to leave the settings panel
+        // to flip back and forth mid-session.
         if (kissActive) {
             val destX = OverlayController.manualDestX
             val destY = OverlayController.manualDestY
@@ -2147,6 +2178,43 @@ class DrawOverlayView(context: Context) : View(context) {
                 drawManualSegLine(canvas, ghostX, ghostY, destX, destY, manualBorderPaint)
                 drawManualSegLine(canvas, ghostX, ghostY, destX, destY, manualCenterPaint)
                 canvas.drawCircle(contactX, contactY, 3f, kissContactDot)
+            }
+            return
+        }
+
+        // ---- Combo shot assist ----
+        // The other side of the kiss-shot story: TARGET again plays "the
+        // ball being hit" but now it's TARGET's OWN path to DEST that
+        // matters, not CUE's. Solved in ComboShot — a plain closed form,
+        // see its header doc. Assumes DEST is somewhere in front of
+        // TARGET (no rail-bank fallback — see ComboShot's Scope note).
+        // Only while DEST is cycled to combo (orange); off (red) or kiss
+        // (green) both skip this entirely.
+        if (comboActive) {
+            val destX = OverlayController.manualDestX
+            val destY = OverlayController.manualDestY
+            val solved = ComboShot.solve(
+                targetX, targetY, destX, destY, cueX, cueY,
+                Tunables.ghostBallDiameterPx, Tunables.manualKissRadiusScalePercent,
+                Tunables.manualKissThrowAngleDeg
+            )
+            // solved == null means DEST needs a contact point on the far
+            // side of TARGET (CUE can't reach it from here) — draw
+            // nothing rather than a wrong answer, same "no false
+            // positives" rule as kiss shot.
+            if (solved != null) {
+                val ghostX = solved.ghostX; val ghostY = solved.ghostY
+                val contactX = solved.contactX; val contactY = solved.contactY
+                // Approach guide: CUE straight to the ghost-ball centre —
+                // same meaning as kiss shot's, just for the opposite
+                // question (this is where CUE needs to be to send TARGET,
+                // not CUE, toward DEST).
+                drawManualSegLine(canvas, cueX, cueY, ghostX, ghostY, manualBorderPaint)
+                drawManualSegLine(canvas, cueX, cueY, ghostX, ghostY, manualCenterPaint)
+                // TARGET travels straight from its own centre to DEST.
+                drawManualSegLine(canvas, targetX, targetY, destX, destY, manualBorderPaint)
+                drawManualSegLine(canvas, targetX, targetY, destX, destY, manualCenterPaint)
+                canvas.drawCircle(contactX, contactY, 3f, comboContactDot)
             }
             return
         }

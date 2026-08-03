@@ -194,26 +194,26 @@ object ManualControlPanelBuilder {
         }
         hint("Bug #3 fix applies here too: the ghost ball sits flush against the calibrated rail with its center — not its edge — as the bounce/reflection point.")
 
-        sectionLabel("Kiss Shot")
-        hint("No new ball handle — reuses CUE and TARGET. Tap the checkbox to bring up DEST (place it on the pocket); after that, tap DEST itself (don't drag it) to flip kiss mode on/off without losing its position — green means the kiss trajectory is showing, red means it's parked and CUE/TARGET fall back to a normal bank shot. While active: TARGET = the ball you're kissing off of (not a rail-bank point), CUE = where the moving ball starts from. A tiny green dot marks exactly where on TARGET's edge contact needs to happen, with guide lines from both CUE and DEST to it. Solved against the game's real ball collision physics (0.95 elasticity), using the CUE→TARGET line as the approach direction. If a shot is geometrically impossible from that approach, nothing gets drawn — no false positives.")
-        checkbox("Enable Kiss Shot assist", Tunables.manualKissEnabled) {
+        sectionLabel("Kiss Shot / Combo Shot")
+        hint("No new ball handle — reuses CUE and TARGET. Tap the checkbox to bring up DEST (place it on the pocket); after that, tap DEST itself (don't drag it) to cycle its mode without losing its position: green = Kiss Shot, orange = Combo Shot, red = off (CUE/TARGET fall back to a normal bank shot). Kiss Shot solves for where CUE ends up after kissing off TARGET. Combo Shot solves the opposite question — which point of TARGET to hit so TARGET itself reaches DEST (DEST should be somewhere in front of TARGET — combo doesn't bank TARGET off a rail). Either way: TARGET = the ball being hit (not a rail-bank point), CUE = where the moving ball starts from. A tiny dot (green for Kiss, orange for Combo) marks exactly where on TARGET's edge contact needs to happen, with guide lines to it. Solved against the game's real ball collision physics (0.95 elasticity), using the CUE→TARGET line as the approach direction. If a shot is geometrically impossible from that approach, nothing gets drawn — no false positives.")
+        checkbox("Enable Kiss Shot / Combo Shot assist", Tunables.manualKissEnabled) {
             OverlayController.setManualKissEnabled(it)
         }
-        hint("Kiss line color, width, opacity, and dashing now follow the CUE/TARGET line settings above — just without the double-line flanks.")
+        hint("Kiss/combo line color, width, opacity, and dashing now follow the CUE/TARGET line settings above — just without the double-line flanks.")
 
         floatSlider(
-            "Kiss ball-size calibration",
+            "Kiss/combo ball-size calibration",
             AutoAimPrefs.MANUAL_KISS_RADIUS_SCALE_MIN_PERCENT, AutoAimPrefs.MANUAL_KISS_RADIUS_SCALE_MAX_PERCENT,
             Tunables.manualKissRadiusScalePercent, 40, { "%.0f%%".format(Locale.US, it) }
         ) { Tunables.manualKissRadiusScalePercent = it; AutoAimPrefs.setManualKissRadiusScalePercent(it) }
-        hint("If kiss shots consistently land short/long of the pocket, the game's ball collision size probably doesn't quite match the ghost-ball diameter above — tune this until it lines up.")
+        hint("Shared by both modes. If shots consistently land short/long of the pocket, the game's ball collision size probably doesn't quite match the ghost-ball diameter above — tune this until it lines up.")
 
         floatSlider(
-            "Kiss fine-tune correction",
+            "Kiss/combo fine-tune correction",
             AutoAimPrefs.MANUAL_KISS_THROW_ANGLE_MIN_DEG, AutoAimPrefs.MANUAL_KISS_THROW_ANGLE_MAX_DEG,
             Tunables.manualKissThrowAngleDeg, 32, { "%.1f°".format(Locale.US, it) }
         ) { Tunables.manualKissThrowAngleDeg = it; AutoAimPrefs.setManualKissThrowAngleDeg(it) }
-        hint("The collision math itself (0.95 elasticity) is now solved exactly from the game's real physics data. This just mops up what isn't modeled — spin-driven throw and any leftover engine/calibration slop — so it should need only small nudges.")
+        hint("Shared by both modes. The collision math itself (0.95 elasticity) is solved exactly from the game's real physics data. This just mops up what isn't modeled — spin-driven throw and any leftover engine/calibration slop — so it should need only small nudges. Combo shot reuses this same slider; verify its direction empirically the way the kiss solve's was tuned, since throw's effect on the struck ball hasn't been field-tested for the combo case yet.")
 
         val sideRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
         fun sideButton(text: String, value: Int) {
@@ -228,7 +228,7 @@ object ManualControlPanelBuilder {
         }
         sideButton("Auto", 0); sideButton("Side A", 1); sideButton("Side B", 2)
         root.addView(sideRow)
-        hint("Two mirror-image contact points always solve the geometry — Auto picks whichever matches where TARGET currently is. If it flips unexpectedly while dragging, lock it to Side A/B.")
+        hint("Kiss Shot only. Two mirror-image contact points always solve the geometry — Auto picks whichever matches where TARGET currently is. If it flips unexpectedly while dragging, lock it to Side A/B. Combo Shot has no such ambiguity (TARGET's post-hit direction is unique given where DEST is), so this doesn't affect it.")
 
         return root
     }

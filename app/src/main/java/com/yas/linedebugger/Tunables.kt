@@ -149,16 +149,19 @@ object Tunables {
     @Volatile var manualDashedLineEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_DASHED_LINE_ENABLED
     @Volatile var manualGhostRailEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_GHOST_RAIL_ENABLED
 
-    // --- Manual KISS / DEST controller (kiss-shot assist). KISS sits on
-    // the ball being kissed off of, DEST on the pocket. Same "manual-only"
-    // isolation as the CUE/TARGET section above. ---
+    // --- Manual KISS / DEST controller (kiss-shot + combo-shot assist).
+    // KISS/TARGET sits on the ball being kissed off of or combo'd, DEST on
+    // the pocket. Same "manual-only" isolation as the CUE/TARGET section
+    // above. ---
     @Volatile var manualKissEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_KISS_ENABLED
-    // Whether kiss-shot mode is the one actually driving the trajectory
-    // right now (green DEST marker) vs. parked off so CUE/TARGET fall
-    // back to a plain bank shot (red DEST marker). Toggled by tapping
-    // (not dragging) DEST — separate from manualKissEnabled, which only
-    // controls whether the DEST marker exists at all.
-    @Volatile var manualKissActive: Boolean = AutoAimPrefs.DEFAULT_MANUAL_KISS_ACTIVE
+    // Which mode is actually driving the trajectory right now — off
+    // (red DEST marker, CUE/TARGET fall back to a plain bank shot), kiss
+    // shot (green — see KissShot), or combo shot (orange — see ComboShot).
+    // Toggled by tapping (not dragging) DEST, cycling
+    // off -> kiss -> combo -> off — separate from manualKissEnabled, which
+    // only controls whether the DEST marker exists at all. See
+    // AutoAimPrefs.DEST_MODE_* for the values.
+    @Volatile var manualDestMode: Int = AutoAimPrefs.DEFAULT_MANUAL_DEST_MODE
     // Tweak 1: corrects a mismatch between the ghost-ball diameter and the
     // real in-game ball's collision size — shifts where along purple's
     // edge contact is solved for.
