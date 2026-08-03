@@ -54,6 +54,7 @@ object AutoAimPrefs {
     private const val KEY_CIRCLE_DIAMETER = "circle_diameter"
     private const val KEY_CIRCLE_ALPHA = "circle_alpha"
     private const val KEY_RAY_MONITOR_ENABLED = "ray_monitor_enabled"
+    private const val KEY_RAY_ZONE_CIRCLE_MODE = "ray_zone_circle_mode"
     private const val KEY_CAPTURE_SCALE = "capture_scale"
 
     private const val KEY_AUTO_AIM_WIDTH_PX = "auto_aim_width_px"
@@ -179,6 +180,7 @@ object AutoAimPrefs {
     const val DEFAULT_CIRCLE_ALPHA = 20
 
     const val DEFAULT_RAY_MONITOR_ENABLED = true
+    const val DEFAULT_RAY_ZONE_CIRCLE_MODE = false
 
     // Capture resolution as a fraction of native. 1.0 = full native res =
     // zero resolution-driven position error, at the highest OS-side mirror/
@@ -403,6 +405,9 @@ object AutoAimPrefs {
     fun isRayMonitorEnabled() = prefs.getBoolean(KEY_RAY_MONITOR_ENABLED, DEFAULT_RAY_MONITOR_ENABLED)
     fun setRayMonitorEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_RAY_MONITOR_ENABLED, v).apply() }
 
+    fun isRayZoneCircleMode() = prefs.getBoolean(KEY_RAY_ZONE_CIRCLE_MODE, DEFAULT_RAY_ZONE_CIRCLE_MODE)
+    fun setRayZoneCircleMode(v: Boolean) { prefs.edit().putBoolean(KEY_RAY_ZONE_CIRCLE_MODE, v).apply() }
+
     fun getCaptureScale() = prefs.getFloat(KEY_CAPTURE_SCALE, DEFAULT_CAPTURE_SCALE)
     fun setCaptureScale(v: Float) { prefs.edit().putFloat(KEY_CAPTURE_SCALE, v).apply() }
 
@@ -603,6 +608,7 @@ object AutoAimPrefs {
         Tunables.circleDiameter = getCircleDiameter()
         Tunables.circleAlpha = getCircleAlpha()
         Tunables.rayMonitorEnabled = isRayMonitorEnabled()
+        Tunables.rayZoneCircleMode = isRayZoneCircleMode()
         Tunables.captureScale = getCaptureScale()
 
         Tunables.detectionMode = getDetectionMode()

@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.os.Build
@@ -31,6 +32,33 @@ import kotlin.math.sin
 // app's calibration-handle clamp and now also applied to the Ray Circle
 // and the manual CUE/TARGET handles.
 private const val EDGE_LIMIT_FRACTION = 0.10f
+
+// Matches CaptureService.minFrameIntervalMs — nothing in the app, capture
+// or interactive, does more update work per second than this.
+private const val FRAME_INTERVAL_MS = 33L
+
+/**
+ * Caps relayout/redraw work from touch-drag handlers to a fixed 30fps
+ * cadence, regardless of the display's actual refresh rate (60/90/120Hz
+ * digitizers all sample faster than that). Requests made while a run is
+ * already scheduled collapse into a single trailing apply of whatever
+ * state is current when it fires — no dropped final position, no
+ * redundant WindowManager transactions in between.
+ */
+private class FrameThrottle(private val view: View, private val intervalMs: Long = FRAME_INTERVAL_MS) {
+    private var scheduled = false
+    private var lastRunMs = 0L
+    fun request(action: () -> Unit) {
+        if (scheduled) return
+        scheduled = true
+        val wait = (intervalMs - (android.os.SystemClock.uptimeMillis() - lastRunMs)).coerceIn(0L, intervalMs)
+        view.postDelayed({
+            scheduled = false
+            lastRunMs = android.os.SystemClock.uptimeMillis()
+            action()
+        }, wait)
+    }
+}
 
 private const val EDGE_HANDLE_VISUAL_PX = 46f
 private const val EDGE_HANDLE_HITBOX_PX = 64
@@ -305,6 +333,7 @@ object OverlayController {
 
         val hView = View(service)
         var downRawX = 0f; var downRawY = 0f; var downX = 0; var downY = 0
+        val circleThrottle = FrameThrottle(hView)
         hView.setOnTouchListener { v, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
@@ -327,10 +356,12 @@ object OverlayController {
 
                     hParams.x = newX.toInt()
                     hParams.y = newY.toInt()
-                    wm.updateViewLayout(v, hParams)
-                    circleCenterX = hParams.x + size / 2
-                    circleCenterY = hParams.y + size / 2
-                    drawView?.invalidate()
+                    circleThrottle.request {
+                        runCatching { wm.updateViewLayout(v, hParams) }
+                        circleCenterX = hParams.x + size / 2
+                        circleCenterY = hParams.y + size / 2
+                        drawView?.invalidate()
+                    }
                     true
                 }
                 else -> false
@@ -412,6 +443,7 @@ object OverlayController {
         panelParams = pParams
 
         var downRawX = 0f; var downRawY = 0f; var downX = 0; var downY = 0
+        val panelThrottle = FrameThrottle(panel)
         header.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
@@ -422,7 +454,9 @@ object OverlayController {
                 MotionEvent.ACTION_MOVE -> {
                     pParams.x = downX + (event.rawX - downRawX).toInt()
                     pParams.y = downY + (event.rawY - downRawY).toInt()
-                    wm.updateViewLayout(panel, pParams)
+                    panelThrottle.request {
+                        runCatching { wm.updateViewLayout(panel, pParams) }
+                    }
                     true
                 }
                 else -> false
@@ -906,6 +940,7 @@ private class EdgeHandle(
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
         PixelFormat.TRANSLUCENT
     )
+    private val throttle = FrameThrottle(view)
 
     init {
         params.gravity = Gravity.TOP or Gravity.START
@@ -946,8 +981,10 @@ private class EdgeHandle(
 
         params.x = newX.toInt()
         params.y = newY.toInt()
-        runCatching { wm.updateViewLayout(view, params) }
-        onMoved(params.x + size / 2f, params.y + size / 2f)
+        throttle.request {
+            runCatching { wm.updateViewLayout(view, params) }
+            onMoved(params.x + size / 2f, params.y + size / 2f)
+        }
     }
 
     fun getCenterX(): Float = params.x + EDGE_HANDLE_HITBOX_PX / 2f
@@ -1189,12 +1226,19 @@ private class ManualHandle(
         var rawTravel = 0f
         // Sticky-rail state (TARGET only — see TARGET_EDGE_STICKY_PX).
         // stuckEdge*: -1 = pinned at the min-edge, 0 = free, 1 = pinned at
-        // the max-edge. pullDebt*: how far outward it's been dragged while
-        // pinned, capped at the sticky distance; pushing back INTO the rail
-        // drains it back down instead of going negative, so jitter right at
-        // the wall can't accidentally bank progress toward a release.
+        // the max-edge. pullDebt*: cumulative RAW (unscaled by sensitivity)
+        // drag distance in the release direction since pinned; uncapped.
+        // Position stays glued to the rail while pullDebt < stickyPx, then
+        // tracks continuously as pullDebt overflows past it — no freeze-
+        // then-teleport, so there's nothing to feel like a snap or wobble.
+        // Pushing back INTO the rail drains it back toward 0 instead of
+        // going negative, so jitter right at the wall can't bank progress.
         var stuckEdgeX = 0; var stuckEdgeY = 0
         var pullDebtX = 0f; var pullDebtY = 0f
+        // Same 30fps cap as attachCircleHandle/EdgeHandle — CUE/TARGET/DEST
+        // get dragged constantly during a session, so this is the single
+        // biggest source of redundant WM transactions + full-screen redraws.
+        val throttle = FrameThrottle(view)
         view.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -1228,9 +1272,16 @@ private class ManualHandle(
                 MotionEvent.ACTION_MOVE -> {
                     val rawX = event.rawX
                     val rawY = event.rawY
-                    val dxRaw = (rawX - lastRawX) * Tunables.manualSensitivity
-                    val dyRaw = (rawY - lastRawY) * Tunables.manualSensitivity
-                    rawTravel += kotlin.math.hypot((rawX - lastRawX).toDouble(), (rawY - lastRawY).toDouble()).toFloat()
+                    // True unscaled finger deltas — used for pullDebt so the
+                    // sticky threshold means the same finger-distance no
+                    // matter the sensitivity setting (same rule TAP_SLOP_PX
+                    // already follows). dxRaw/dyRaw stay sensitivity-scaled
+                    // since that's the unit exactX/exactY move in.
+                    val rawDx = rawX - lastRawX
+                    val rawDy = rawY - lastRawY
+                    val dxRaw = rawDx * Tunables.manualSensitivity
+                    val dyRaw = rawDy * Tunables.manualSensitivity
+                    rawTravel += kotlin.math.hypot(rawDx.toDouble(), rawDy.toDouble()).toFloat()
                     val halfHit = hitboxPx / 2f
 
                     // When the table is calibrated, the handle centre is
@@ -1244,54 +1295,44 @@ private class ManualHandle(
                         val maxCX = Tunables.tableRight - halfBall
                         val minCY = Tunables.tableTop + halfBall
                         val maxCY = Tunables.tableBottom - halfBall
-                        val stickyPx = if (role == ManualRole.TARGET) TARGET_EDGE_STICKY_PX else 0f
+                        val sticky = role == ManualRole.TARGET
 
-                        if (maxCX > minCX) {
-                            if (stuckEdgeX != 0) {
-                                val outward = if (stuckEdgeX == -1) dxRaw else -dxRaw
-                                pullDebtX = (pullDebtX + outward).coerceIn(0f, stickyPx)
-                                if (pullDebtX >= stickyPx) {
-                                    // Released: place it exactly stickyPx
-                                    // past the rail (how far it was actually
-                                    // dragged while pinned), then resume
-                                    // normal 1:1 tracking from there.
-                                    exactX = (if (stuckEdgeX == -1) minCX + stickyPx else maxCX - stickyPx) - halfHit
-                                    stuckEdgeX = 0
-                                    pullDebtX = 0f
-                                } // else: still pinned — exactX left untouched, sits at the rail
-                            } else {
-                                exactX += dxRaw
-                            }
+                        if (maxCX > minCX && sticky && stuckEdgeX != 0) {
+                            val outward = if (stuckEdgeX == -1) rawDx else -rawDx
+                            pullDebtX = (pullDebtX + outward).coerceAtLeast(0f)
+                            val extra = (pullDebtX - TARGET_EDGE_STICKY_PX).coerceAtLeast(0f) * Tunables.manualSensitivity
+                            exactX = (if (stuckEdgeX == -1) minCX + extra else maxCX - extra) - halfHit
                         } else {
                             exactX += dxRaw
                         }
 
-                        if (maxCY > minCY) {
-                            if (stuckEdgeY != 0) {
-                                val outward = if (stuckEdgeY == -1) dyRaw else -dyRaw
-                                pullDebtY = (pullDebtY + outward).coerceIn(0f, stickyPx)
-                                if (pullDebtY >= stickyPx) {
-                                    exactY = (if (stuckEdgeY == -1) minCY + stickyPx else maxCY - stickyPx) - halfHit
-                                    stuckEdgeY = 0
-                                    pullDebtY = 0f
-                                }
-                            } else {
-                                exactY += dyRaw
-                            }
+                        if (maxCY > minCY && sticky && stuckEdgeY != 0) {
+                            val outward = if (stuckEdgeY == -1) rawDy else -rawDy
+                            pullDebtY = (pullDebtY + outward).coerceAtLeast(0f)
+                            val extra = (pullDebtY - TARGET_EDGE_STICKY_PX).coerceAtLeast(0f) * Tunables.manualSensitivity
+                            exactY = (if (stuckEdgeY == -1) minCY + extra else maxCY - extra) - halfHit
                         } else {
                             exactY += dyRaw
                         }
 
                         var cx = exactX + halfHit
                         var cy = exactY + halfHit
-                        // Guard against inverted rect if ball > table.
+                        // Guard against inverted rect if ball > table. Also
+                        // where stickiness (re)arms: touching/crossing an
+                        // edge pins it fresh, landing clear of both edges
+                        // un-pins it (fully continuous handoff either way —
+                        // see the extra*sensitivity math above, its
+                        // per-frame delta matches free-mode's dxRaw exactly
+                        // right at the threshold, so there's no seam).
                         if (maxCX > minCX) {
-                            if (cx < minCX) { cx = minCX; stuckEdgeX = -1; pullDebtX = 0f }
-                            else if (cx > maxCX) { cx = maxCX; stuckEdgeX = 1; pullDebtX = 0f }
+                            if (cx < minCX) { cx = minCX; if (sticky) { stuckEdgeX = -1; pullDebtX = 0f } }
+                            else if (cx > maxCX) { cx = maxCX; if (sticky) { stuckEdgeX = 1; pullDebtX = 0f } }
+                            else if (sticky) { stuckEdgeX = 0 }
                         }
                         if (maxCY > minCY) {
-                            if (cy < minCY) { cy = minCY; stuckEdgeY = -1; pullDebtY = 0f }
-                            else if (cy > maxCY) { cy = maxCY; stuckEdgeY = 1; pullDebtY = 0f }
+                            if (cy < minCY) { cy = minCY; if (sticky) { stuckEdgeY = -1; pullDebtY = 0f } }
+                            else if (cy > maxCY) { cy = maxCY; if (sticky) { stuckEdgeY = 1; pullDebtY = 0f } }
+                            else if (sticky) { stuckEdgeY = 0 }
                         }
                         exactX = cx - halfHit
                         exactY = cy - halfHit
@@ -1311,9 +1352,10 @@ private class ManualHandle(
                     params.y = Math.round(exactY)
                     lastRawX = rawX; lastRawY = rawY
 
-
-                    runCatching { wm.updateViewLayout(view, params) }
-                    onMoved(params.x + hitboxPx / 2f, params.y + hitboxPx / 2f)
+                    throttle.request {
+                        runCatching { wm.updateViewLayout(view, params) }
+                        onMoved(params.x + hitboxPx / 2f, params.y + hitboxPx / 2f)
+                    }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
@@ -1443,6 +1485,7 @@ class DrawOverlayView(context: Context) : View(context) {
         isFilterBitmap = true
     }
     private val previewRectF = RectF()
+    private val monitorClipPath = Path()
     private var previewBitmap: Bitmap? = null
     private var previewSide: Int = -1
     private val clipPieceA = FloatArray(4)
@@ -1597,7 +1640,11 @@ class DrawOverlayView(context: Context) : View(context) {
         val result = OverlayController.lastResult
         if (!OverlayController.captureless && OverlayController.captureAlive) {
             circlePaint.alpha = Tunables.circleAlpha
-            canvas.drawRect(cx - half, cy - half, cx + half, cy + half, circlePaint)
+            if (Tunables.rayZoneCircleMode) {
+                canvas.drawCircle(cx, cy, half, circlePaint)
+            } else {
+                canvas.drawRect(cx - half, cy - half, cx + half, cy + half, circlePaint)
+            }
 
             if (Tunables.rayMonitorEnabled) {
             if (result != null && result.previewArgb.isNotEmpty()) {
@@ -1621,8 +1668,21 @@ class DrawOverlayView(context: Context) : View(context) {
                     val previewTop = 84f
                     previewRectF.set(previewLeft, previewTop, previewLeft + disp, previewTop + disp)
 
-                    canvas.drawRect(previewRectF, bgPaint)
-                    canvas.drawBitmap(previewBitmap!!, null, previewRectF, monitorSquarePaint)
+                    if (Tunables.rayZoneCircleMode) {
+                        canvas.save()
+                        monitorClipPath.reset()
+                        monitorClipPath.addCircle(
+                            previewRectF.centerX(), previewRectF.centerY(),
+                            disp / 2f, Path.Direction.CW
+                        )
+                        canvas.clipPath(monitorClipPath)
+                        canvas.drawRect(previewRectF, bgPaint)
+                        canvas.drawBitmap(previewBitmap!!, null, previewRectF, monitorSquarePaint)
+                        canvas.restore()
+                    } else {
+                        canvas.drawRect(previewRectF, bgPaint)
+                        canvas.drawBitmap(previewBitmap!!, null, previewRectF, monitorSquarePaint)
+                    }
                 }
             }
             canvas.drawRect(16f, 16f, 720f, 76f, bgPaint)
@@ -2010,31 +2070,34 @@ class DrawOverlayView(context: Context) : View(context) {
         // Skipped while kiss-shot mode is active — it draws its own green
         // guide below instead, and this line + its double/band lines
         // would otherwise stay visible underneath it, cluttering the view.
-        val nearT = (len - halfBall).coerceAtLeast(0f)
-        if (nearT > 1f && !kissActive) {
-            val endNearX = cueX + dx * nearT
-            val endNearY = cueY + dy * nearT
+        val startT = halfBall.coerceAtMost(len)
+        val centerEndT = len + halfBall
+        val doubleEndT = (len - halfBall).coerceAtLeast(startT)
+        if ((centerEndT - startT) > 1f && !kissActive) {
+            val startNearX = cueX + dx * startT
+            val startNearY = cueY + dy * startT
+            val endNearX = cueX + dx * centerEndT
+            val endNearY = cueY + dy * centerEndT
+            val doubleEndX = cueX + dx * doubleEndT
+            val doubleEndY = cueY + dy * doubleEndT
 
-            if (Tunables.manualDoubleLineEnabled && Tunables.manualBandStyleEnabled) {
-                // Band drawn first, underneath, so the crisp center line
-                // reads as a thin line running through a soft wide band —
-                // matching the reference app's collision-width look.
+            if (Tunables.manualDoubleLineEnabled && Tunables.manualBandStyleEnabled && doubleEndT - startT > 1f) {
                 var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
                 if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
                 manualBandPaint.strokeWidth = doubleHalfWidth * 2f
-                canvas.drawLine(cueX, cueY, endNearX, endNearY, manualBandPaint)
+                canvas.drawLine(startNearX, startNearY, doubleEndX, doubleEndY, manualBandPaint)
             }
 
-            drawManualSegLine(canvas, cueX, cueY, endNearX, endNearY, manualBorderPaint)
-            drawManualSegLine(canvas, cueX, cueY, endNearX, endNearY, manualCenterPaint)
+            drawManualSegLine(canvas, startNearX, startNearY, endNearX, endNearY, manualBorderPaint)
+            drawManualSegLine(canvas, startNearX, startNearY, endNearX, endNearY, manualCenterPaint)
 
-            if (Tunables.manualDoubleLineEnabled && !Tunables.manualBandStyleEnabled) {
+            if (Tunables.manualDoubleLineEnabled && !Tunables.manualBandStyleEnabled && doubleEndT - startT > 1f) {
                 var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
                 if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
                 val px = -dy * doubleHalfWidth
                 val py = dx * doubleHalfWidth
-                canvas.drawLine(cueX + px, cueY + py, endNearX + px, endNearY + py, manualDoublePaint)
-                canvas.drawLine(cueX - px, cueY - py, endNearX - px, endNearY - py, manualDoublePaint)
+                canvas.drawLine(startNearX + px, startNearY + py, doubleEndX + px, doubleEndY + py, manualDoublePaint)
+                canvas.drawLine(startNearX - px, startNearY - py, doubleEndX - px, doubleEndY - py, manualDoublePaint)
             }
         }
 

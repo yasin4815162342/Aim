@@ -39,6 +39,26 @@ object LineDetector {
     private var rejectedRailBuf: BooleanArray = BooleanArray(0)
     private val EMPTY_PREVIEW = IntArray(0)
 
+    // IRLS scratch — detectInner runs one candidate-count-sized fit per
+    // captured frame (30fps while capture is on); these used to be 3 fresh
+    // DoubleArray(n) plus a sortedArray() copy-and-sort PER ITERATION (x5)
+    // PER FRAME. Same buffer-reuse pattern as candidateBuf etc. above.
+    private var irlsTukeyW: DoubleArray = DoubleArray(0)
+    private var irlsResiduals: DoubleArray = DoubleArray(0)
+    private var irlsAbsR: DoubleArray = DoubleArray(0)
+    private var irlsSortBuf: DoubleArray = DoubleArray(0)
+    private var irlsKeptBuf: IntArray = IntArray(0)
+
+    private fun ensureIrlsScratch(n: Int) {
+        if (irlsTukeyW.size < n) {
+            irlsTukeyW = DoubleArray(n)
+            irlsResiduals = DoubleArray(n)
+            irlsAbsR = DoubleArray(n)
+            irlsSortBuf = DoubleArray(n)
+            irlsKeptBuf = IntArray(n)
+        }
+    }
+
     // Weight = brightness ABOVE the inclusion threshold, not raw brightness.
     // The candidate mask is a hard cut (bright > minBrightness), so a pixel
     // one unit above the line and one unit below it get weight ~full vs 0 —
@@ -239,9 +259,9 @@ object LineDetector {
         //     fall back to all surviving line pixels if none pass filters
         //     (Scenario B / thin short guidelines must still lock). ---
         val best = selectBestLineComponent(lineMask, brightness, size)
-        val xs: ArrayList<Int>
-        val ys: ArrayList<Int>
-        val ws: ArrayList<Float>
+        var xs: ArrayList<Int>
+        var ys: ArrayList<Int>
+        var ws: ArrayList<Float>
         var totalW: Float
         var meanX: Double
         var meanY: Double
@@ -295,8 +315,7 @@ object LineDetector {
         repeat(2) {
             val (fx, fy, fw) = filterByLocalWidth(xs, ys, ws, fit.angle, fit.meanX, fit.meanY)
             if (fx.size >= scaledMinLinePixels()) {
-                xs.clear(); ys.clear(); ws.clear()
-                xs.addAll(fx); ys.addAll(fy); ws.addAll(fw)
+                xs = fx; ys = fy; ws = fw
                 fit = computeFit(xs, ys, ws)
             }
         }
@@ -315,8 +334,7 @@ object LineDetector {
             val ry = ArrayList<Int>(keptIdx.size)
             val rw = ArrayList<Float>(keptIdx.size)
             for (idx in keptIdx) { rx.add(xs[idx]); ry.add(ys[idx]); rw.add(ws[idx]) }
-            xs.clear(); ys.clear(); ws.clear()
-            xs.addAll(rx); ys.addAll(ry); ws.addAll(rw)
+            xs = rx; ys = ry; ws = rw
             fit = irlsFit
         }
 
@@ -742,9 +760,12 @@ object LineDetector {
         var angle = seedAngle
         var mx = seedMx
         var my = seedMy
-        val tukeyW = DoubleArray(n) { ws[it].toDouble() }
-        val residuals = DoubleArray(n)
-        val absR = DoubleArray(n)
+        ensureIrlsScratch(n)
+        val tukeyW = irlsTukeyW
+        val residuals = irlsResiduals
+        val absR = irlsAbsR
+        val sortBuf = irlsSortBuf
+        for (i in 0 until n) tukeyW[i] = ws[i].toDouble()
 
         repeat(iterations) {
             val dirX = cos(angle); val dirY = sin(angle)
@@ -754,7 +775,9 @@ object LineDetector {
                 residuals[i] = r
                 absR[i] = abs(r)
             }
-            val mad = absR.sortedArray()[n / 2]
+            System.arraycopy(absR, 0, sortBuf, 0, n)
+            java.util.Arrays.sort(sortBuf, 0, n)
+            val mad = sortBuf[n / 2]
             val c = (mad * 1.4826).coerceAtLeast(scaleFloorPx) * Tunables.outlierTrimK
 
             var sw = 0.0; var swx = 0.0; var swy = 0.0
@@ -783,10 +806,11 @@ object LineDetector {
         }
 
         var totalW = 0f
-        for (w in tukeyW) totalW += w.toFloat()
-        val kept = ArrayList<Int>(n)
-        for (i in 0 until n) if (tukeyW[i] > 0.0) kept.add(i)
-        return FitState(totalW, mx, my, angle) to kept.toIntArray()
+        for (i in 0 until n) totalW += tukeyW[i].toFloat()
+        val keptBuf = irlsKeptBuf
+        var keptCount = 0
+        for (i in 0 until n) if (tukeyW[i] > 0.0) { keptBuf[keptCount] = i; keptCount++ }
+        return FitState(totalW, mx, my, angle) to keptBuf.copyOf(keptCount)
     }
 
     // ------------------------------------------------------------------

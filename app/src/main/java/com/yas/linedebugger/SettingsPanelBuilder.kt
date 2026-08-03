@@ -401,6 +401,9 @@ object SettingsPanelBuilder {
         checkbox("Ray Monitor (pixel preview + status text)", Tunables.rayMonitorEnabled) {
             Tunables.rayMonitorEnabled = it; AutoAimPrefs.setRayMonitorEnabled(it)
         }
+        checkbox("Ray Zone Circle Mode (round instead of square)", Tunables.rayZoneCircleMode) {
+            Tunables.rayZoneCircleMode = it; AutoAimPrefs.setRayZoneCircleMode(it)
+        }
 
         if (onCalibrate != null) {
             root.addView(Button(context).apply {

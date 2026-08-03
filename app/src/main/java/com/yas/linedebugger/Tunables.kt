@@ -71,6 +71,7 @@ object Tunables {
     // --- Ray Circle (the draggable detection-area controller) ---
     @Volatile var circleDiameter: Int = AutoAimPrefs.DEFAULT_CIRCLE_DIAMETER  // the draggable controller's size in px
     @Volatile var circleAlpha: Int = AutoAimPrefs.DEFAULT_CIRCLE_ALPHA       // 0-255, the controller circle's opacity
+    @Volatile var rayZoneCircleMode: Boolean = AutoAimPrefs.DEFAULT_RAY_ZONE_CIRCLE_MODE  // false=square, true=circle; shared shape for Ray Zone ring + Ray Monitor preview
 
     // --- Ray Monitor: the raw-pixel debug preview + status text overlay ---
     @Volatile var rayMonitorEnabled: Boolean = AutoAimPrefs.DEFAULT_RAY_MONITOR_ENABLED
