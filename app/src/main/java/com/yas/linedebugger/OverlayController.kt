@@ -1302,6 +1302,7 @@ private class ManualHandle(
                             pullDebtX = (pullDebtX + outward).coerceAtLeast(0f)
                             val extra = (pullDebtX - TARGET_EDGE_STICKY_PX).coerceAtLeast(0f) * Tunables.manualSensitivity
                             exactX = (if (stuckEdgeX == -1) minCX + extra else maxCX - extra) - halfHit
+                            if (extra > 0f) stuckEdgeX = 0
                         } else {
                             exactX += dxRaw
                         }
@@ -1311,6 +1312,7 @@ private class ManualHandle(
                             pullDebtY = (pullDebtY + outward).coerceAtLeast(0f)
                             val extra = (pullDebtY - TARGET_EDGE_STICKY_PX).coerceAtLeast(0f) * Tunables.manualSensitivity
                             exactY = (if (stuckEdgeY == -1) minCY + extra else maxCY - extra) - halfHit
+                            if (extra > 0f) stuckEdgeY = 0
                         } else {
                             exactY += dyRaw
                         }
@@ -1318,21 +1320,19 @@ private class ManualHandle(
                         var cx = exactX + halfHit
                         var cy = exactY + halfHit
                         // Guard against inverted rect if ball > table. Also
-                        // where stickiness (re)arms: touching/crossing an
-                        // edge pins it fresh, landing clear of both edges
-                        // un-pins it (fully continuous handoff either way —
-                        // see the extra*sensitivity math above, its
-                        // per-frame delta matches free-mode's dxRaw exactly
-                        // right at the threshold, so there's no seam).
+                        // where stickiness re-arms: crossing back onto an
+                        // edge in free mode pins it fresh. Un-pinning is
+                        // handled above (extra > 0), not here — cx sits
+                        // exactly ON the boundary while pinned-with-zero-
+                        // extra, so an "else un-pin" here would release it
+                        // immediately every frame.
                         if (maxCX > minCX) {
                             if (cx < minCX) { cx = minCX; if (sticky) { stuckEdgeX = -1; pullDebtX = 0f } }
                             else if (cx > maxCX) { cx = maxCX; if (sticky) { stuckEdgeX = 1; pullDebtX = 0f } }
-                            else if (sticky) { stuckEdgeX = 0 }
                         }
                         if (maxCY > minCY) {
                             if (cy < minCY) { cy = minCY; if (sticky) { stuckEdgeY = -1; pullDebtY = 0f } }
                             else if (cy > maxCY) { cy = maxCY; if (sticky) { stuckEdgeY = 1; pullDebtY = 0f } }
-                            else if (sticky) { stuckEdgeY = 0 }
                         }
                         exactX = cx - halfHit
                         exactY = cy - halfHit
