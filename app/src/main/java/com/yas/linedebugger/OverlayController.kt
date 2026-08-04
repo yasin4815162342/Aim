@@ -716,6 +716,7 @@ object OverlayController {
         )
 
         if (Tunables.manualKissEnabled) attachManualDestHandle()
+        updateCueSuppression()
 
         applyHandleVisibility()
         drawView?.invalidate()
@@ -728,6 +729,18 @@ object OverlayController {
         drawView?.invalidate()
     }
 
+    /** Keeps CUE's own handle (hitbox, ghost-ball outline, red dot) hidden
+     * and non-touchable while combo shot is actively driving the
+     * trajectory — combo no longer uses CUE's position for anything, and
+     * the aiming itself is done for real with a separate, unrelated
+     * auto-line feature instead. Reapplied on every DEST-mode change and
+     * whenever the CUE/TARGET handles are (re)attached, so it's always in
+     * sync with the current mode even across a service restart. */
+    private fun updateCueSuppression() {
+        val comboActive = Tunables.manualKissEnabled && Tunables.manualDestMode == AutoAimPrefs.DEST_MODE_COMBO
+        manualCueHandle?.setSuppressed(comboActive)
+    }
+
     /** Called by the "Enable Kiss Shot / Combo Shot assist" checkbox. Same
      * safe-to-call-anytime contract as [setManualControllerEnabled]. Both
      * modes reuse CUE (the striking ball's approach point) and TARGET (the
@@ -736,6 +749,7 @@ object OverlayController {
         Tunables.manualKissEnabled = enabled
         AutoAimPrefs.setManualKissEnabled(enabled)
         if (enabled) attachManualDestHandle() else detachManualDestHandle()
+        updateCueSuppression()
         drawView?.invalidate()
     }
 
@@ -751,6 +765,7 @@ object OverlayController {
         Tunables.manualDestMode = mode
         AutoAimPrefs.setManualDestMode(mode)
         manualDestHandle?.refreshVisual()
+        updateCueSuppression()
         drawView?.invalidate()
     }
 
@@ -1381,6 +1396,21 @@ private class ManualHandle(
 
     fun setVisualDiameter(diameterPx: Float) {
         view.setVisualDiameterPx(diameterPx)
+    }
+
+    /** Fully hides this handle (and stops it swallowing touches meant for
+     * whatever's underneath) while [suppressed] is true, without detaching
+     * it — position, sticky-rail state etc. are preserved so it reappears
+     * exactly where it was left. Used to hide CUE while combo shot is
+     * active — see OverlayController's updateCueSuppression. */
+    fun setSuppressed(suppressed: Boolean) {
+        view.visibility = if (suppressed) View.INVISIBLE else View.VISIBLE
+        params.flags = if (suppressed) {
+            params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        } else {
+            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        }
+        runCatching { wm.updateViewLayout(view, params) }
     }
 
     /** Forces the handle's own view to redraw — e.g. after a tap-toggled
@@ -2177,44 +2207,126 @@ class DrawOverlayView(context: Context) : View(context) {
                 drawManualSegLine(canvas, cueX, cueY, ghostX, ghostY, manualCenterPaint)
                 drawManualSegLine(canvas, ghostX, ghostY, destX, destY, manualBorderPaint)
                 drawManualSegLine(canvas, ghostX, ghostY, destX, destY, manualCenterPaint)
+                // The actual aim point: CUE's centre needs to land HERE,
+                // one full ball diameter from TARGET's centre — not at the
+                // contact dot below, which is only the surface-touch point
+                // (half a ball short of this). Same ball-sized ring +
+                // centre-dot style as the bank walk's rail markers, just
+                // always shown (this is the whole point of kiss shot, not
+                // an optional extra) and colored to match kiss mode.
+                canvas.drawCircle(
+                    ghostX, ghostY,
+                    (halfBall - manualMarkerRing.strokeWidth / 2f).coerceAtLeast(1f),
+                    manualMarkerRing
+                )
+                canvas.drawCircle(ghostX, ghostY, 5f, kissContactDot)
+                // Contact dot: where the two balls' surfaces actually
+                // touch — useful as a reference, but never aim here.
                 canvas.drawCircle(contactX, contactY, 3f, kissContactDot)
             }
             return
         }
 
         // ---- Combo shot assist ----
-        // The other side of the kiss-shot story: TARGET again plays "the
-        // ball being hit" but now it's TARGET's OWN path to DEST that
-        // matters, not CUE's. Solved in ComboShot — a plain closed form,
-        // see its header doc. Assumes DEST is somewhere in front of
-        // TARGET (no rail-bank fallback — see ComboShot's Scope note).
+        // CUE isn't part of this at all anymore — see
+        // updateCueSuppression, which hides its handle entirely while
+        // combo is active (aiming is done for real with a separate,
+        // unrelated auto-line feature). TARGET again plays "the ball
+        // being hit" but now it's TARGET's OWN path to DEST that matters.
+        // Solved in ComboShot — a plain closed form, see its header doc.
         // Only while DEST is cycled to combo (orange); off (red) or kiss
         // (green) both skip this entirely.
         if (comboActive) {
             val destX = OverlayController.manualDestX
             val destY = OverlayController.manualDestY
             val solved = ComboShot.solve(
-                targetX, targetY, destX, destY, cueX, cueY,
-                Tunables.ghostBallDiameterPx, Tunables.manualKissRadiusScalePercent,
-                Tunables.manualKissThrowAngleDeg
+                targetX, targetY, destX, destY,
+                Tunables.ghostBallDiameterPx, Tunables.manualKissRadiusScalePercent
             )
-            // solved == null means DEST needs a contact point on the far
-            // side of TARGET (CUE can't reach it from here) — draw
-            // nothing rather than a wrong answer, same "no false
+            // solved == null means DEST sits inside TARGET's own footprint
+            // — draw nothing rather than a wrong answer, same "no false
             // positives" rule as kiss shot.
             if (solved != null) {
                 val ghostX = solved.ghostX; val ghostY = solved.ghostY
                 val contactX = solved.contactX; val contactY = solved.contactY
-                // Approach guide: CUE straight to the ghost-ball centre —
-                // same meaning as kiss shot's, just for the opposite
-                // question (this is where CUE needs to be to send TARGET,
-                // not CUE, toward DEST).
-                drawManualSegLine(canvas, cueX, cueY, ghostX, ghostY, manualBorderPaint)
-                drawManualSegLine(canvas, cueX, cueY, ghostX, ghostY, manualCenterPaint)
-                // TARGET travels straight from its own centre to DEST.
+                // TARGET travels straight from its own centre to DEST —
+                // the "collision mark" dot is where on TARGET's edge to
+                // land the real shot (aimed separately, for real, with the
+                // auto-line feature).
                 drawManualSegLine(canvas, targetX, targetY, destX, destY, manualBorderPaint)
                 drawManualSegLine(canvas, targetX, targetY, destX, destY, manualCenterPaint)
+                // The actual aim point: the striking ball's centre needs
+                // to land HERE, one full ball diameter from TARGET's
+                // centre — not at the small contact dot below, which is
+                // only the surface-touch point (half a ball short of
+                // this). With CUE's own line gone, this ring is now the
+                // only thing showing where that is, so it's not optional.
+                canvas.drawCircle(
+                    ghostX, ghostY,
+                    (halfBall - manualMarkerRing.strokeWidth / 2f).coerceAtLeast(1f),
+                    manualMarkerRing
+                )
+                canvas.drawCircle(ghostX, ghostY, 5f, comboContactDot)
+                // Contact dot: where the two balls' surfaces actually
+                // touch — useful as a reference, but never aim here.
                 canvas.drawCircle(contactX, contactY, 3f, comboContactDot)
+
+                // ---- Bank continuation past DEST, when DEST hugs a rail ----
+                // DEST now plays the role TARGET plays in the plain Bank
+                // Shot walk below: the point where the ball actually
+                // contacts the rail. The TARGET→DEST segment just drawn
+                // above IS that walk's first leg — this continues it past
+                // the bounce, reusing the exact same rail-reflection code
+                // (BankShot.reflect for this first, correction-curve
+                // accurate bounce, same convention as the plain Bank Shot
+                // walk's own first segment; drawBankSegments then carries
+                // on with reflectMirror for anything beyond that).
+                val destOnEdge = calibrated && (
+                    destX <= left + edgeTol || destX >= right - edgeTol ||
+                    destY <= top + edgeTol || destY >= bottom - edgeTol
+                )
+                val maxLines = Tunables.maxLines
+                if (destOnEdge && maxLines > 1) {
+                    val comboLen = hypot(destX - targetX, destY - targetY)
+                    if (comboLen > 1f) {
+                        val cdx = (destX - targetX) / comboLen
+                        val cdy = (destY - targetY) / comboLen
+                        // Re-derive which wall DEST is actually against
+                        // from the ray itself (not the edge-proximity
+                        // check above) so the bend point and hitVertical
+                        // are exactly consistent with where the ray
+                        // really lands — same approach the plain Bank
+                        // Shot walk uses, robust to DEST sitting a few px
+                        // off the true edge within edgeTol.
+                        var tX = Float.MAX_VALUE
+                        var tY = Float.MAX_VALUE
+                        if (cdx > 1e-4f) tX = (right - targetX) / cdx else if (cdx < -1e-4f) tX = (left - targetX) / cdx
+                        if (cdy > 1e-4f) tY = (bottom - targetY) / cdy else if (cdy < -1e-4f) tY = (top - targetY) / cdy
+                        val tWall = minOf(tX, tY)
+                        if (tWall != Float.MAX_VALUE && tWall > 0.5f) {
+                            val hitVertical = abs(tWall - tX) <= abs(tWall - tY)
+                            val bendX = targetX + cdx * tWall
+                            val bendY = targetY + cdy * tWall
+                            val reflected = BankShot.reflect(cdx, cdy, hitVertical)
+                            if (reflected != null) {
+                                if (Tunables.manualGhostRailEnabled) {
+                                    canvas.drawCircle(
+                                        bendX, bendY,
+                                        (halfBall - manualMarkerRing.strokeWidth / 2f).coerceAtLeast(1f),
+                                        manualMarkerRing
+                                    )
+                                    canvas.drawCircle(bendX, bendY, 4f, manualMarkerDot)
+                                }
+                                val maxTotalLength = ((right - left) + (bottom - top)) * 1.4f
+                                drawBankSegments(
+                                    canvas, bendX, bendY, reflected[0], reflected[1],
+                                    (maxTotalLength - tWall).coerceAtLeast(0f), 1, maxLines, false,
+                                    left, top, right, bottom, halfBall
+                                )
+                            }
+                        }
+                    }
+                }
             }
             return
         }
@@ -2336,6 +2448,88 @@ class DrawOverlayView(context: Context) : View(context) {
             } else {
                 curX = endX; curY = endY
             }
+        }
+    }
+
+    /**
+     * Draws consecutive rail-bounce segments starting at (startX,startY)
+     * heading in direction (startDx,startDy), reflecting off whichever
+     * rail each one hits along the way. Used by Combo Shot's post-DEST
+     * bank continuation (see drawManualController) for every bounce after
+     * the first — the plain CUE/TARGET Bank Shot walk below has its own,
+     * separate copy of this same logic for its first segment (which needs
+     * extra gap-around-the-ghost-ball handling this one doesn't) and
+     * isn't changed here.
+     *
+     * [firstBounceExact] should be true only when the very first bounce
+     * (the one already used to get to (startX,startY)) hasn't happened
+     * yet and needs the real, correction-curve-accurate reflection (see
+     * BankShot.reflect) rather than a pure mirror (BankShot.reflectMirror)
+     * — pass the post-bounce direction and false once that's already been
+     * done by the caller.
+     */
+    private fun drawBankSegments(
+        canvas: Canvas,
+        startX: Float, startY: Float, startDx: Float, startDy: Float,
+        remainingLenStart: Float, segmentsUsed: Int, maxLines: Int,
+        firstBounceExact: Boolean,
+        left: Float, top: Float, right: Float, bottom: Float, halfBall: Float
+    ) {
+        var curX = startX; var curY = startY
+        var curDx = startDx; var curDy = startDy
+        var remaining = remainingLenStart
+        var segment = segmentsUsed
+        var exact = firstBounceExact
+        while (segment < maxLines) {
+            if (remaining <= 1f) break
+
+            var tX = Float.MAX_VALUE
+            var tY = Float.MAX_VALUE
+            if (curDx > 1e-4f) tX = (right - curX) / curDx else if (curDx < -1e-4f) tX = (left - curX) / curDx
+            if (curDy > 1e-4f) tY = (bottom - curY) / curDy else if (curDy < -1e-4f) tY = (top - curY) / curDy
+            val tWall = minOf(tX, tY)
+            if (tWall == Float.MAX_VALUE || tWall < 0.5f) break
+
+            val tDraw = minOf(tWall, remaining)
+            val endX = curX + curDx * tDraw
+            val endY = curY + curDy * tDraw
+
+            if (Tunables.manualDoubleLineEnabled && Tunables.manualBandStyleEnabled) {
+                var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                manualBankBandPaint.strokeWidth = doubleHalfWidth * 2f
+                canvas.drawLine(curX, curY, endX, endY, manualBankBandPaint)
+            }
+            drawManualSegLine(canvas, curX, curY, endX, endY, manualBankBorderPaint)
+            drawManualSegLine(canvas, curX, curY, endX, endY, manualBankCenterPaint)
+            if (Tunables.manualDoubleLineEnabled && !Tunables.manualBandStyleEnabled) {
+                var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                val px = -curDy * doubleHalfWidth
+                val py = curDx * doubleHalfWidth
+                canvas.drawLine(curX + px, curY + py, endX + px, endY + py, manualBankDoublePaint)
+                canvas.drawLine(curX - px, curY - py, endX - px, endY - py, manualBankDoublePaint)
+            }
+
+            remaining -= tDraw
+            if (tDraw < tWall - 0.01f) break
+
+            val hitVertical = abs(tWall - tX) <= abs(tWall - tY)
+            if (Tunables.manualGhostRailEnabled && segment + 1 < maxLines) {
+                canvas.drawCircle(
+                    endX, endY,
+                    (halfBall - manualMarkerRing.strokeWidth / 2f).coerceAtLeast(1f),
+                    manualMarkerRing
+                )
+                canvas.drawCircle(endX, endY, 4f, manualMarkerDot)
+            }
+
+            val reflected = if (exact) BankShot.reflect(curDx, curDy, hitVertical) else BankShot.reflectMirror(curDx, curDy, hitVertical)
+            if (reflected == null) break
+            curDx = reflected[0]; curDy = reflected[1]
+            curX = endX; curY = endY
+            exact = false
+            segment++
         }
     }
 
