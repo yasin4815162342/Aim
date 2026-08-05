@@ -149,19 +149,16 @@ object Tunables {
     @Volatile var manualDashedLineEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_DASHED_LINE_ENABLED
     @Volatile var manualGhostRailEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_GHOST_RAIL_ENABLED
 
-    // --- Manual KISS / DEST controller (kiss-shot + combo-shot assist).
-    // KISS/TARGET sits on the ball being kissed off of or combo'd, DEST on
-    // the pocket. Same "manual-only" isolation as the CUE/TARGET section
-    // above. ---
+    // --- Manual KISS / DEST controller (kiss-shot assist only — Combo
+    // Shot is fully separate, see the section below). KISS/TARGET sits on
+    // the ball being kissed off of, DEST on the pocket. Same "manual-only"
+    // isolation as the CUE/TARGET section above. ---
     @Volatile var manualKissEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_KISS_ENABLED
-    // Which mode is actually driving the trajectory right now — off
-    // (red DEST marker, CUE/TARGET fall back to a plain bank shot), kiss
-    // shot (green — see KissShot), or combo shot (orange — see ComboShot).
-    // Toggled by tapping (not dragging) DEST, cycling
-    // off -> kiss -> combo -> off — separate from manualKissEnabled, which
-    // only controls whether the DEST marker exists at all. See
-    // AutoAimPrefs.DEST_MODE_* for the values.
-    @Volatile var manualDestMode: Int = AutoAimPrefs.DEFAULT_MANUAL_DEST_MODE
+    // Whether DEST is currently showing Kiss Shot (green) or parked off
+    // (red, CUE/TARGET fall back to a plain bank shot). Toggled by tapping
+    // (not dragging) DEST — separate from manualKissEnabled, which only
+    // controls whether the DEST marker exists at all.
+    @Volatile var manualKissActive: Boolean = AutoAimPrefs.DEFAULT_MANUAL_KISS_ACTIVE
     // Tweak 1: corrects a mismatch between the ghost-ball diameter and the
     // real in-game ball's collision size — shifts where along purple's
     // edge contact is solved for.
@@ -177,4 +174,18 @@ object Tunables {
     // their own width/opacity — they render with manualBorderPaint/
     // manualCenterPaint, i.e. whatever manualLineColor/manualLineWidthPx/
     // manualLineOpacity above are set to, same as the CUE/TARGET line.
+
+    // --- Manual COMBO controller (combo-shot assist). Fully independent
+    // of Kiss above — its own destination handle (yellow octagon,
+    // ManualRole.COMBO_DEST) instead of sharing DEST, and always renders
+    // as an overlay when enabled regardless of Kiss's on/off state. Uses
+    // TARGET (the ball being hit) the same way Kiss does; never uses CUE. ---
+    @Volatile var manualComboEnabled: Boolean = AutoAimPrefs.DEFAULT_MANUAL_COMBO_ENABLED
+    // Tweak 1: same purpose as Kiss's ball-size calibration above, but its
+    // own independent value.
+    @Volatile var manualComboRadiusScalePercent: Float = AutoAimPrefs.DEFAULT_MANUAL_COMBO_RADIUS_SCALE_PERCENT
+    // Tweak 2: how far apart the two ghost balls sit at the solved contact
+    // point, added to the geometric 2×radius separation. 0 = rings exactly
+    // hug (old behavior). Negative = rings overlap. Positive = a gap.
+    @Volatile var manualComboOffsetPx: Float = AutoAimPrefs.DEFAULT_MANUAL_COMBO_OFFSET_PX
 }

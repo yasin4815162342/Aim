@@ -194,26 +194,26 @@ object ManualControlPanelBuilder {
         }
         hint("Bug #3 fix applies here too: the ghost ball sits flush against the calibrated rail with its center — not its edge — as the bounce/reflection point.")
 
-        sectionLabel("Kiss Shot / Combo Shot")
-        hint("No new ball handle for Kiss Shot — it reuses CUE and TARGET. Tap the checkbox to bring up DEST (place it on the pocket); after that, tap DEST itself (don't drag it) to cycle its mode without losing its position: green = Kiss Shot, orange = Combo Shot, red = off (CUE/TARGET fall back to a normal bank shot). Kiss Shot solves for where CUE ends up after kissing off TARGET, using the CUE→TARGET line as the approach direction. Combo Shot solves the opposite question — which point of TARGET to hit so TARGET itself reaches DEST (DEST should be somewhere in front of TARGET) — and doesn't use CUE at all: CUE's handle hides itself while combo is active, since aiming is done for real with the separate auto-line feature instead. If combo's DEST is dragged onto a rail, it draws the bank continuation past DEST too, same rail-reflection code as the plain Bank Shot walk above. A tiny dot (green for Kiss, orange for Combo) marks exactly where on TARGET's edge contact needs to happen. If a shot is geometrically impossible, nothing gets drawn — no false positives.")
-        checkbox("Enable Kiss Shot / Combo Shot assist", Tunables.manualKissEnabled) {
+        sectionLabel("Kiss Shot")
+        hint("No new ball handle — reuses CUE and TARGET. Tap the checkbox to bring up DEST (place it on the pocket); tap DEST itself (don't drag it) to toggle Kiss Shot on/off without losing its position: green = on, red = off (CUE/TARGET fall back to a normal bank shot). Solves for where CUE ends up after kissing off TARGET, using the CUE→TARGET line as the approach direction. A tiny green dot marks exactly where on TARGET's edge contact needs to happen. If a shot is geometrically impossible, nothing gets drawn — no false positives.")
+        checkbox("Enable Kiss Shot", Tunables.manualKissEnabled) {
             OverlayController.setManualKissEnabled(it)
         }
-        hint("Kiss/combo line color, width, opacity, and dashing now follow the CUE/TARGET line settings above — just without the double-line flanks.")
+        hint("Kiss line color, width, opacity, and dashing follow the CUE/TARGET line settings above — just without the double-line flanks.")
 
         floatSlider(
-            "Kiss/combo ball-size calibration",
+            "Kiss ball-size calibration",
             AutoAimPrefs.MANUAL_KISS_RADIUS_SCALE_MIN_PERCENT, AutoAimPrefs.MANUAL_KISS_RADIUS_SCALE_MAX_PERCENT,
             Tunables.manualKissRadiusScalePercent, 40, { "%.0f%%".format(Locale.US, it) }
         ) { Tunables.manualKissRadiusScalePercent = it; AutoAimPrefs.setManualKissRadiusScalePercent(it) }
-        hint("Shared by both modes. If shots consistently land short/long of the pocket, the game's ball collision size probably doesn't quite match the ghost-ball diameter above — tune this until it lines up.")
+        hint("If shots consistently land short/long of the pocket, the game's ball collision size probably doesn't quite match the ghost-ball diameter above — tune this until it lines up.")
 
         floatSlider(
             "Kiss fine-tune correction",
             AutoAimPrefs.MANUAL_KISS_THROW_ANGLE_MIN_DEG, AutoAimPrefs.MANUAL_KISS_THROW_ANGLE_MAX_DEG,
             Tunables.manualKissThrowAngleDeg, 32, { "%.1f°".format(Locale.US, it) }
         ) { Tunables.manualKissThrowAngleDeg = it; AutoAimPrefs.setManualKissThrowAngleDeg(it) }
-        hint("Kiss Shot only — Combo Shot doesn't use this (its contact point is exact geometry, no fudge factor). The collision math itself (0.95 elasticity) is solved exactly from the game's real physics data. This just mops up what isn't modeled — spin-driven throw and any leftover engine/calibration slop — so it should need only small nudges.")
+        hint("The collision math itself (0.95 elasticity) is solved exactly from the game's real physics data. This just mops up what isn't modeled — spin-driven throw and any leftover engine/calibration slop — so it should need only small nudges.")
 
         val sideRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
         fun sideButton(text: String, value: Int) {
@@ -228,7 +228,28 @@ object ManualControlPanelBuilder {
         }
         sideButton("Auto", 0); sideButton("Side A", 1); sideButton("Side B", 2)
         root.addView(sideRow)
-        hint("Kiss Shot only. Two mirror-image contact points always solve the geometry — Auto picks whichever matches where TARGET currently is. If it flips unexpectedly while dragging, lock it to Side A/B. Combo Shot has no such ambiguity (TARGET's post-hit direction is unique given where DEST is), so this doesn't affect it.")
+        hint("Two mirror-image contact points always solve the geometry — Auto picks whichever matches where TARGET currently is. If it flips unexpectedly while dragging, lock it to Side A/B.")
+
+        sectionLabel("Combo Shot")
+        hint("Fully separate from Kiss Shot above — always shows as an overlay when enabled, regardless of Kiss Shot's on/off state. Adds its own yellow octagon destination handle. Solves which point of TARGET to hit so TARGET itself reaches the octagon (place the octagon somewhere in front of TARGET). Doesn't use CUE at all — aim the real shot with the separate auto-line feature instead. If the octagon is dragged onto a rail, the guide continues past it with the same rail-reflection code as the plain Bank Shot walk above. A tiny orange dot marks exactly where on TARGET's edge contact needs to happen. If a shot is geometrically impossible, nothing gets drawn — no false positives.")
+        checkbox("Enable Combo Shot", Tunables.manualComboEnabled) {
+            OverlayController.setManualComboEnabled(it)
+        }
+        hint("Combo line color, width, opacity, and dashing follow the CUE/TARGET line settings above too.")
+
+        floatSlider(
+            "Combo ghost ball size",
+            AutoAimPrefs.MANUAL_COMBO_RADIUS_SCALE_MIN_PERCENT, AutoAimPrefs.MANUAL_COMBO_RADIUS_SCALE_MAX_PERCENT,
+            Tunables.manualComboRadiusScalePercent, 40, { "%.0f%%".format(Locale.US, it) }
+        ) { Tunables.manualComboRadiusScalePercent = it; AutoAimPrefs.setManualComboRadiusScalePercent(it) }
+        hint("Its own independent value, separate from Kiss's — if shots consistently land short/long, the game's ball collision size probably doesn't quite match the ghost-ball diameter above.")
+
+        floatSlider(
+            "Combo offset",
+            AutoAimPrefs.MANUAL_COMBO_OFFSET_MIN_PX, AutoAimPrefs.MANUAL_COMBO_OFFSET_MAX_PX,
+            Tunables.manualComboOffsetPx, 60, { "%.0f px".format(Locale.US, it) }
+        ) { Tunables.manualComboOffsetPx = it; AutoAimPrefs.setManualComboOffsetPx(it) }
+        hint("How far apart the two ghost balls sit at contact. 0 = rings exactly hug. Negative = rings overlap slightly. Positive = a small gap between them.")
 
         return root
     }
