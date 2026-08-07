@@ -263,10 +263,12 @@ object OverlayController {
     private var manualDestHandle: ManualHandle? = null
 
     // --- Manual COMBO controller state (combo-shot assist) ---
-    // Fully independent of DEST/Kiss above — its own destination handle
-    // (yellow octagon), same full size as CUE/TARGET rather than DEST's
-    // small dot. Always renders when Tunables.manualComboEnabled, whether
-    // or not Kiss Shot is also on.
+    // The yellow Octagon: an independent ball marker for Combo Shot,
+    // entirely separate from TARGET. CUE and TARGET keep doing their own
+    // plain Bank Shot regardless of combo mode — this marker is solved
+    // against DEST on its own (see ComboShot + drawManualController's
+    // combo branch). Only shown/touchable while DEST is cycled to combo
+    // — see updateComboHandleVisibility.
     @Volatile var manualComboX: Float = 0f
     @Volatile var manualComboY: Float = 0f
     private var manualComboHandle: ManualHandle? = null
@@ -724,8 +726,11 @@ object OverlayController {
             onMoved = { x, y -> manualTargetX = x; manualTargetY = y; drawView?.invalidate() }
         )
 
-        if (Tunables.manualKissEnabled) attachManualDestHandle()
-        if (Tunables.manualComboEnabled) attachManualComboHandle()
+        if (Tunables.manualKissEnabled) {
+            attachManualDestHandle()
+            attachManualComboHandle()
+        }
+        updateComboHandleVisibility()
 
         applyHandleVisibility()
         drawView?.invalidate()
@@ -739,34 +744,64 @@ object OverlayController {
         drawView?.invalidate()
     }
 
-    /** Called by the "Enable Kiss Shot" checkbox. Same safe-to-call-anytime
-     * contract as [setManualControllerEnabled]. Reuses CUE (the striking
-     * ball's approach point) and TARGET (the ball being hit) — DEST is the
-     * only extra point. Combo Shot is entirely separate — see
-     * [setManualComboEnabled]. */
+    /** Keeps the Octagon (combo ball) handle hidden and non-touchable
+     * except while DEST is actually cycled to combo mode — it's a separate
+     * ball from TARGET, so it'd just be clutter the rest of the time.
+     * CUE and TARGET are never suppressed for any DEST mode; they always
+     * run their own plain Bank Shot regardless of combo. Reapplied on
+     * every DEST-mode change and whenever the combo handle is (re)attached,
+     * so it's always in sync with the current mode even across a service
+     * restart. */
+    private fun updateComboHandleVisibility() {
+        val comboActive = Tunables.manualKissEnabled && Tunables.manualDestMode == AutoAimPrefs.DEST_MODE_COMBO
+        manualComboHandle?.setSuppressed(!comboActive)
+    }
+
+    /** Called by the "Enable Kiss Shot / Combo Shot assist" checkbox. Same
+     * safe-to-call-anytime contract as [setManualControllerEnabled]. Kiss
+     * mode reuses CUE (the striking ball's approach point) and TARGET (the
+     * ball being hit) with DEST as the only extra point. Combo mode is
+     * independent of CUE/TARGET entirely — it gets its own Octagon +
+     * DEST pair instead. */
     fun setManualKissEnabled(enabled: Boolean) {
         Tunables.manualKissEnabled = enabled
         AutoAimPrefs.setManualKissEnabled(enabled)
-        if (enabled) attachManualDestHandle() else detachManualDestHandle()
+        if (enabled) {
+            attachManualDestHandle()
+            attachManualComboHandle()
+        } else {
+            detachManualDestHandle()
+            detachManualComboHandle()
+        }
+        updateComboHandleVisibility()
         drawView?.invalidate()
     }
 
-    /** Sets whether DEST is currently showing Kiss Shot (green) or parked
-     * off (red). Toggled by tapping (not dragging) the DEST marker — see
-     * ManualHandle's onTapped, wired up in [attachManualDestHandle] via
-     * [toggleManualKissActive]. Unlike [setManualKissEnabled], this never
-     * touches the handle itself: DEST stays right where it is, it just
-     * switches whether the kiss trajectory is showing. */
-    fun setManualKissActive(active: Boolean) {
-        Tunables.manualKissActive = active
-        AutoAimPrefs.setManualKissActive(active)
+    /** Sets DEST's mode directly (see AutoAimPrefs.DEST_MODE_*). Toggled by
+     * tapping (not dragging) the DEST marker — see ManualHandle's onTapped,
+     * wired up in [attachManualDestHandle] via [cycleManualDestMode].
+     * Unlike [setManualKissEnabled], this never touches the handle itself:
+     * DEST stays right where it is, it just switches which trajectory is
+     * showing — kiss shot (green, see KissShot), combo shot (orange, see
+     * ComboShot, driven by the Octagon rather than TARGET), or a plain
+     * CUE/TARGET bank shot (red, off) — so nobody has to dig into settings
+     * mid-shot to switch back and forth. */
+    fun setManualDestMode(mode: Int) {
+        Tunables.manualDestMode = mode
+        AutoAimPrefs.setManualDestMode(mode)
         manualDestHandle?.refreshVisual()
+        updateComboHandleVisibility()
         drawView?.invalidate()
     }
 
-    /** DEST's tap-to-toggle: red (off) <-> green (kiss shot). */
-    fun toggleManualKissActive() {
-        setManualKissActive(!Tunables.manualKissActive)
+    /** DEST's tap-to-cycle: off -> kiss -> combo -> off -> ... */
+    fun cycleManualDestMode() {
+        val next = when (Tunables.manualDestMode) {
+            AutoAimPrefs.DEST_MODE_KISS -> AutoAimPrefs.DEST_MODE_COMBO
+            AutoAimPrefs.DEST_MODE_COMBO -> AutoAimPrefs.DEST_MODE_OFF
+            else -> AutoAimPrefs.DEST_MODE_KISS
+        }
+        setManualDestMode(next)
     }
 
     private fun attachManualDestHandle() {
@@ -781,7 +816,7 @@ object OverlayController {
         manualDestHandle = ManualHandle(
             svc, wm, screenWidth, screenHeight, ManualRole.DEST, manualDestX, manualDestY,
             onMoved = { x, y -> manualDestX = x; manualDestY = y; drawView?.invalidate() },
-            onTapped = { toggleManualKissActive() }
+            onTapped = { cycleManualDestMode() }
         )
 
         applyHandleVisibility()
@@ -793,31 +828,26 @@ object OverlayController {
         drawView?.invalidate()
     }
 
-    /** Called by the "Enable Combo Shot" checkbox. Fully independent of
-     * Kiss Shot — attaches its own yellow-octagon destination handle
-     * (COMBO_DEST), full CUE/TARGET size rather than DEST's small dot.
-     * Once enabled, Combo always renders as an overlay regardless of
-     * Kiss Shot's on/off state — see drawManualController. */
-    fun setManualComboEnabled(enabled: Boolean) {
-        Tunables.manualComboEnabled = enabled
-        AutoAimPrefs.setManualComboEnabled(enabled)
-        if (enabled) attachManualComboHandle() else detachManualComboHandle()
-        drawView?.invalidate()
-    }
-
+    /** The yellow Octagon — Combo Shot's own independent ball marker,
+     * entirely separate from TARGET. Spawns opposite DEST's default corner
+     * so the two don't start out stacked. Suppressed (hidden + non-
+     * touchable) except while combo mode is actually active — see
+     * updateComboHandleVisibility — but attached/detached alongside DEST
+     * so its position persists across mode switches the same way. */
     private fun attachManualComboHandle() {
         val svc = service ?: return
         val wm = windowManager ?: return
-        if (!Tunables.manualControllerEnabled) return // needs TARGET as the base ball
+        if (!Tunables.manualControllerEnabled) return // needs CUE/TARGET as the base shot
         if (manualComboHandle != null) return // already attached
 
         manualComboX = screenWidth * 0.85f
         manualComboY = screenHeight * 0.15f
 
         manualComboHandle = ManualHandle(
-            svc, wm, screenWidth, screenHeight, ManualRole.COMBO_DEST, manualComboX, manualComboY,
+            svc, wm, screenWidth, screenHeight, ManualRole.COMBO, manualComboX, manualComboY,
             onMoved = { x, y -> manualComboX = x; manualComboY = y; drawView?.invalidate() }
         )
+        updateComboHandleVisibility()
 
         applyHandleVisibility()
         drawView?.invalidate()
@@ -828,13 +858,26 @@ object OverlayController {
         drawView?.invalidate()
     }
 
-    /** Live-resizes both manual balls' visual diameter, keeping each
+    /** Called when the "Combo ball size offset" slider moves. It only
+     * affects the Collision Ghost Ball, which is drawn fresh every frame
+     * in drawManualController straight from Tunables — so there's nothing
+     * to resize on the handle itself (the Money Ball's own ring always
+     * matches CUE/TARGET's shared size, same as before). Just needs a
+     * redraw so a change shows up immediately even while paused. */
+    fun onComboBallDiameterOffsetChanged() {
+        drawView?.invalidate()
+    }
+
+    /** Live-resizes all three manual balls' visual diameter, keeping each
      * handle's on-screen center fixed. Called when the shared "Ghost ball
      * size" slider moves (it's the same physical ball as the rail-bounce
-     * marker — see bug #3), mirroring the Manual app's applyBallSize(). */
+     * marker — see bug #3), mirroring the Manual app's applyBallSize().
+     * The Money Ball's own ring always matches CUE/TARGET here — see
+     * onComboBallDiameterOffsetChanged for the one ring that doesn't. */
     fun onGhostBallDiameterChanged(newDiameterPx: Float) {
         manualCueHandle?.setVisualDiameter(newDiameterPx)
         manualTargetHandle?.setVisualDiameter(newDiameterPx)
+        manualComboHandle?.setVisualDiameter(newDiameterPx)
         drawView?.invalidate()
     }
 
@@ -956,7 +999,6 @@ object OverlayController {
         manualCueHandle?.remove(); manualCueHandle = null
         manualTargetHandle?.remove(); manualTargetHandle = null
         manualDestHandle?.remove(); manualDestHandle = null
-        manualComboHandle?.remove(); manualComboHandle = null
         drawView = null; handleView = null; panelView = null; windowManager = null
         service = null
         calibrationMode = false
@@ -1228,10 +1270,8 @@ private class DPadView(context: Context) : View(context) {
 /** TARGET (the bank-shot end) draws as a red-tinted circle handle; CUE
  * draws as a black-tinted square handle. Both also draw a ball-diameter
  * ghost-ball outline + red center dot — see ManualHandleView. DEST (kiss
- * shot) is its own thing: just a small dot, no ball involved. COMBO_DEST
- * (combo shot's destination) draws as a yellow octagon, full CUE/TARGET
- * size — its own handle, independent of DEST. */
-private enum class ManualRole { CUE, TARGET, DEST, COMBO_DEST }
+ * shot) is its own thing: just a small dot, no ball involved. */
+private enum class ManualRole { CUE, TARGET, DEST, COMBO }
 
 /**
  * A draggable CUE or TARGET ball handle for the manual controller — ported
@@ -1338,10 +1378,11 @@ private class ManualHandle(
                     rawTravel += kotlin.math.hypot(rawDx.toDouble(), rawDy.toDouble()).toFloat()
                     val halfHit = hitboxPx / 2f
 
-                    // When the table is calibrated, TARGET (and DEST /
-                    // COMBO_DEST) centres stay limited to the INSET table
-                    // rect (table edge ± half ghost-ball) so the ghost
-                    // ball's outer edge hugs the yellow calibration line.
+                    // When the table is calibrated, the handle centre is
+                    // limited to the INSET table rect (table edge ± half
+                    // ghost-ball). That way the ghost ball's outer edge
+                    // hugs the yellow calibration line — the red-dot
+                    // centre never sits on the rail itself.
                     // CUE is exempt: it may float anywhere on screen with
                     // only a 1% hitbox margin so it can't fully slide off.
                     if (Tunables.tableLeft >= 0f && role != ManualRole.CUE) {
@@ -1431,6 +1472,22 @@ private class ManualHandle(
         view.setVisualDiameterPx(diameterPx)
     }
 
+    /** Fully hides this handle (and stops it swallowing touches meant for
+     * whatever's underneath) while [suppressed] is true, without detaching
+     * it — position, sticky-rail state etc. are preserved so it reappears
+     * exactly where it was left. Used to hide the Octagon (combo ball)
+     * handle except while combo shot is active — see
+     * OverlayController's updateComboHandleVisibility. */
+    fun setSuppressed(suppressed: Boolean) {
+        view.visibility = if (suppressed) View.INVISIBLE else View.VISIBLE
+        params.flags = if (suppressed) {
+            params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        } else {
+            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        }
+        runCatching { wm.updateViewLayout(view, params) }
+    }
+
     /** Forces the handle's own view to redraw — e.g. after a tap-toggled
      * state change that onDraw reads directly from Tunables. */
     fun refreshVisual() {
@@ -1444,13 +1501,13 @@ private class ManualHandle(
 
 /**
  * Visual for a manual handle — a big translucent hitbox (red circle for
- * TARGET, black square for CUE, yellow octagon for COMBO_DEST) plus a
- * ball-diameter ghost-ball outline with a red center dot for CUE/TARGET.
- * DEST is its own thing: a small dot (no ball involved, it's a pocket aim
- * point) that toggles red (off) <-> green (kiss shot) — tap it to toggle
- * (see ManualHandle's onTapped and OverlayController.toggleManualKissActive).
- * It also gets a smaller touch hitbox than the others — see
- * DEST_HANDLE_HITBOX_PX.
+ * TARGET, black square for CUE, yellow octagon for COMBO) plus a
+ * ball-diameter ghost-ball outline with a red center dot for CUE/TARGET/
+ * COMBO. DEST is its own thing: a small dot (no ball involved, it's a
+ * pocket aim point) that cycles red (off) -> green (kiss shot) -> orange
+ * (combo shot) -> red — tap it to cycle (see ManualHandle's onTapped and
+ * OverlayController.cycleManualDestMode). It also gets a smaller touch
+ * hitbox than CUE/TARGET/COMBO — see DEST_HANDLE_HITBOX_PX.
  */
 private class ManualHandleView(
     context: Context,
@@ -1467,6 +1524,9 @@ private class ManualHandleView(
         if (role == ManualRole.TARGET) {
             color = Color.RED
             alpha = 40
+        } else if (role == ManualRole.COMBO) {
+            color = Color.YELLOW
+            alpha = 55
         } else {
             color = Color.BLACK
             alpha = 45
@@ -1476,28 +1536,41 @@ private class ManualHandleView(
         style = Paint.Style.FILL
         color = Color.RED
     }
-    // DEST's own dot color reflects whether Kiss Shot is toggled on — see
-    // Tunables.manualKissActive and ManualHandle's onTapped. Separate
-    // Paints from centerDot above so CUE/TARGET's ghost-ball dot (always
-    // red) is never affected.
+    // DEST's own dot color reflects its current mode — see
+    // Tunables.manualDestMode and ManualHandle's onTapped. Separate Paints
+    // from centerDot above so CUE/TARGET's ghost-ball dot (always red) is
+    // never affected.
     private val destKissDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.GREEN
+    }
+    private val destComboDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.rgb(255, 165, 0) // orange
     }
     private val destOffDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.RED
     }
-    // COMBO_DEST's controller shape — same opacity as TARGET's fill above.
-    private val comboFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        color = Color.YELLOW
-        alpha = 40
-    }
 
     fun setVisualDiameterPx(diameterPx: Float) {
         visualDiameterPx = diameterPx
         invalidate()
+    }
+
+    /** Regular 8-sided outline centered on (cx, cy) with "radius" ch —
+     * COMBO's own hitbox shape, so it reads as visually distinct from
+     * TARGET's circle and CUE's square at a glance. */
+    private fun drawOctagon(canvas: Canvas, cx: Float, cy: Float, ch: Float, paint: Paint) {
+        val path = Path()
+        for (i in 0 until 8) {
+            val angle = (Math.PI / 4 * i + Math.PI / 8).toFloat()
+            val x = cx + ch * kotlin.math.cos(angle)
+            val y = cy + ch * kotlin.math.sin(angle)
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        path.close()
+        canvas.drawPath(path, paint)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -1507,49 +1580,32 @@ private class ManualHandleView(
 
         if (role == ManualRole.DEST) {
             // Just a pocket-aim dot — no ball, no ghost ring. Color shows
-            // whether Kiss Shot is toggled on (tap to toggle).
-            val dot = if (Tunables.manualKissActive) destKissDot else destOffDot
+            // the current mode (tap to cycle).
+            val dot = when (Tunables.manualDestMode) {
+                AutoAimPrefs.DEST_MODE_KISS -> destKissDot
+                AutoAimPrefs.DEST_MODE_COMBO -> destComboDot
+                else -> destOffDot
+            }
             canvas.drawCircle(cx, cy, 16f, dot)
             canvas.drawCircle(cx, cy, 16f, outline)
             return
         }
 
-        if (role == ManualRole.COMBO_DEST) {
-            // Combo's own destination handle — a plain filled octagon, no
-            // ghost ring (it's a destination point, not a ball). Note: this
-            // is the CONTROLLER's shape only; Combo Shot's ghost-ball
-            // visual (drawn at the solved point in drawManualController)
-            // is unchanged.
-            drawOctagon(canvas, cx, cy, ch, comboFill)
-            return
-        }
-
         if (role == ManualRole.TARGET) {
             canvas.drawCircle(cx, cy, ch, controllerFill)
+        } else if (role == ManualRole.COMBO) {
+            drawOctagon(canvas, cx, cy, ch, controllerFill)
+            drawOctagon(canvas, cx, cy, ch, outline)
         } else {
             canvas.drawRect(cx - ch, cy - ch, cx + ch, cy + ch, controllerFill)
         }
 
-        // Ghost ball always drawn for CUE, TARGET, and KISS.
+        // Ghost ball always drawn for CUE, TARGET, COMBO, and KISS.
         val r = visualDiameterPx / 2f - outline.strokeWidth / 2f
         if (r > 1f) {
             canvas.drawCircle(cx, cy, r, outline)
             canvas.drawCircle(cx, cy, 4f, centerDot)
         }
-    }
-
-    /** Regular 8-point octagon inscribed in a circle of [radius] centered
-     * at ([cx],[cy]) — flat-topped (first vertex at 22.5°). */
-    private fun drawOctagon(canvas: Canvas, cx: Float, cy: Float, radius: Float, paint: Paint) {
-        val path = Path()
-        for (i in 0 until 8) {
-            val a = Math.toRadians(22.5 + i * 45.0)
-            val px = cx + radius * cos(a).toFloat()
-            val py = cy + radius * sin(a).toFloat()
-            if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
-        }
-        path.close()
-        canvas.drawPath(path, paint)
     }
 }
 
@@ -1675,18 +1731,18 @@ class DrawOverlayView(context: Context) : View(context) {
 
     // Kiss-shot / combo-shot assist: a tiny contact dot on TARGET's edge
     // (kept small on purpose — a few pixels is plenty for aiming accuracy
-    // and a big marker just gets in the way), colored green for Kiss and
-    // orange for Combo. The guide lines (CUE→ghost→DEST for kiss, or
-    // TARGET→[bend→]COMBO_DEST for combo) don't have their own paint —
-    // they're drawn with manualBorderPaint/manualCenterPaint (and
-    // manualBankBorderPaint/manualBankCenterPaint for combo's post-bank
-    // segment) below, same color/width/opacity/dashing as the CUE/TARGET
-    // line, just without the double-line flanks.
+    // and a big marker just gets in the way), colored to match its mode
+    // the same way DEST itself is. The guide lines (CUE→ghost, and either
+    // ghost→DEST for kiss or TARGET→[bend→]DEST for combo) don't have
+    // their own paint — they're drawn with manualBorderPaint/
+    // manualCenterPaint (and manualBankBorderPaint/manualBankCenterPaint
+    // for combo's post-bank segment) below, same color/width/opacity/
+    // dashing as the CUE/TARGET line, just without the double-line flanks.
     private val kissContactDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL; color = Color.GREEN
     }
     private val comboContactDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL; color = Color.rgb(255, 165, 0) // orange
+        style = Paint.Style.FILL; color = Color.rgb(255, 0, 255) // brightest magenta — opposite hue from a dim green felt table
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -2155,16 +2211,21 @@ class DrawOverlayView(context: Context) : View(context) {
         manualMarkerRing.alpha = (255 * alphaScale).toInt()
         manualMarkerDot.alpha = (255 * alphaScale).toInt()
 
-        // Whether DEST is currently showing Kiss Shot — DEST must exist
-        // (manualKissEnabled) AND be toggled on (manualKissActive, green
-        // not red). Combo Shot no longer lives on DEST at all — see the
-        // independent block near the end of this function.
-        val kissActive = Tunables.manualKissEnabled && Tunables.manualKissActive
+        // Which of DEST's modes is active. Kiss shot fully replaces the
+        // plain CUE→TARGET line and bank walk with its own guide below.
+        // Combo shot is different: it's the Octagon's own independent ball
+        // now, not TARGET, so it runs ALONGSIDE the plain CUE/TARGET bank
+        // shot rather than replacing it — see the combo branch below.
+        val destMode = if (Tunables.manualKissEnabled) Tunables.manualDestMode else AutoAimPrefs.DEST_MODE_OFF
+        val kissActive = destMode == AutoAimPrefs.DEST_MODE_KISS
+        val comboActive = destMode == AutoAimPrefs.DEST_MODE_COMBO
 
         // ---- CUE → TARGET aim line (bank/cut mode only) ----
-        // Skipped while kiss-shot mode is active — it draws its own guide
-        // below instead, and this line + its double/band lines would
-        // otherwise stay visible underneath it, cluttering the view.
+        // Skipped only while kiss-shot mode is active (it draws its own
+        // guide below instead, and this line + its double/band lines would
+        // otherwise stay visible underneath it, cluttering the view).
+        // Combo shot does NOT suppress this — CUE/TARGET keep running
+        // their own plain bank shot no matter what DEST is doing.
         val startT = halfBall.coerceAtMost(len)
         val centerEndT = len + halfBall
         val doubleEndT = (len - halfBall).coerceAtLeast(startT)
@@ -2201,13 +2262,13 @@ class DrawOverlayView(context: Context) : View(context) {
         // "ball going to a pocket directly" — same handle, different job,
         // exactly like TARGET means different things between a plain cut
         // and a bank shot. CUE is still just the moving ball's approach
-        // point. So this replaces the plain bank branch below entirely
-        // rather than running alongside it — but only while DEST is
-        // toggled on (green). manualKissEnabled just means DEST *exists*;
-        // tapping it (not dragging) toggles it red/off <-> green/on, so
-        // you're never forced to leave the settings panel to flip back and
-        // forth mid-session. Combo Shot no longer shares this marker — see
-        // the independent block near the end of this function.
+        // point. So this replaces the bank branch below entirely rather
+        // than running alongside it — but only while DEST is actually
+        // cycled to kiss mode (green). manualKissEnabled just means DEST
+        // *exists*; tapping it to cycle its mode (manualDestMode) is what
+        // actually switches between kiss, combo, and plain bank
+        // trajectories, so you're never forced to leave the settings panel
+        // to flip back and forth mid-session.
         if (kissActive) {
             val destX = OverlayController.manualDestX
             val destY = OverlayController.manualDestY
@@ -2258,199 +2319,103 @@ class DrawOverlayView(context: Context) : View(context) {
                 // touch — useful as a reference, but never aim here.
                 canvas.drawCircle(contactX, contactY, 3f, kissContactDot)
             }
-        } else if (targetOnEdge) {
-            // Full original bank walk (same as pre-change behaviour).
-            val maxTotalLength = ((right - left) + (bottom - top)) * 1.4f
-            var curX = cueX.coerceIn(left, right)
-            var curY = cueY.coerceIn(top, bottom)
-            var remaining = maxTotalLength
-            val maxLines = Tunables.maxLines
-            var segDx = dx
-            var segDy = dy
-
-            for (segment in 0 until maxLines) {
-                if (remaining <= 1f) break
-
-                var tX = Float.MAX_VALUE
-                var tY = Float.MAX_VALUE
-                if (segDx > 1e-4f) tX = (right - curX) / segDx else if (segDx < -1e-4f) tX = (left - curX) / segDx
-                if (segDy > 1e-4f) tY = (bottom - curY) / segDy else if (segDy < -1e-4f) tY = (top - curY) / segDy
-
-                val tWall = minOf(tX, tY)
-                if (tWall == Float.MAX_VALUE || tWall < 0.5f) break
-
-                val tDraw = minOf(tWall, remaining)
-                val endX = curX + segDx * tDraw
-                val endY = curY + segDy * tDraw
-
-                val segBorder = if (segment == 0) manualBorderPaint else manualBankBorderPaint
-                val segCenter = if (segment == 0) manualCenterPaint else manualBankCenterPaint
-
-                if (segment == 0 && len > halfBall) {
-                    // Gap around TARGET; draw only the part past the ghost ball
-                    // (CUE→TARGET already drawn above).
-                    val farT = len + halfBall
-                    if (tDraw > farT) {
-                        val farX = curX + segDx * farT
-                        val farY = curY + segDy * farT
-                        if (Tunables.manualDoubleLineEnabled && Tunables.manualBandStyleEnabled) {
-                            var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
-                            if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
-                            manualBandPaint.strokeWidth = doubleHalfWidth * 2f
-                            canvas.drawLine(farX, farY, endX, endY, manualBandPaint)
-                        }
-                        drawManualSegLine(canvas, farX, farY, endX, endY, segBorder)
-                        drawManualSegLine(canvas, farX, farY, endX, endY, segCenter)
-                        if (Tunables.manualDoubleLineEnabled && !Tunables.manualBandStyleEnabled) {
-                            var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
-                            if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
-                            val px = -segDy * doubleHalfWidth
-                            val py = segDx * doubleHalfWidth
-                            val segDouble = manualDoublePaint
-                            canvas.drawLine(farX + px, farY + py, endX + px, endY + py, segDouble)
-                            canvas.drawLine(farX - px, farY - py, endX - px, endY - py, segDouble)
-                        }
-                    }
-                } else if (segment > 0) {
-                    // Reflected bank segments.
-                    if (Tunables.manualDoubleLineEnabled && Tunables.manualBandStyleEnabled) {
-                        var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
-                        if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
-                        manualBankBandPaint.strokeWidth = doubleHalfWidth * 2f
-                        canvas.drawLine(curX, curY, endX, endY, manualBankBandPaint)
-                    }
-                    drawManualSegLine(canvas, curX, curY, endX, endY, segBorder)
-                    drawManualSegLine(canvas, curX, curY, endX, endY, segCenter)
-                    if (Tunables.manualDoubleLineEnabled && !Tunables.manualBandStyleEnabled) {
-                        var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
-                        if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
-                        val px = -segDy * doubleHalfWidth
-                        val py = segDx * doubleHalfWidth
-                        canvas.drawLine(curX + px, curY + py, endX + px, endY + py, manualBankDoublePaint)
-                        canvas.drawLine(curX - px, curY - py, endX - px, endY - py, manualBankDoublePaint)
-                    }
-                }
-
-                remaining -= tDraw
-                if (tDraw < tWall - 0.01f) break
-
-                // Prefer vertical when both are essentially equal (corner), same
-                // as the automatic ray's drawDirection — was a separate latent
-                // inconsistency between the two loops, not the double-bank
-                // cause itself, but worth fixing alongside it.
-                val hitVertical = abs(tWall - tX) <= abs(tWall - tY)
-
-                if (Tunables.manualGhostRailEnabled && segment + 1 < maxLines) {
-                    // Centre sits on the inset wall → ghost-ball edge flush on
-                    // the true (yellow) table edge.
-                    canvas.drawCircle(
-                        endX, endY,
-                        (halfBall - manualMarkerRing.strokeWidth / 2f).coerceAtLeast(1f),
-                        manualMarkerRing
-                    )
-                    canvas.drawCircle(endX, endY, 4f, manualMarkerDot)
-                }
-
-                val reflected = if (segment == 0) {
-                    BankShot.reflect(segDx, segDy, hitVertical)
-                } else {
-                    BankShot.reflectMirror(segDx, segDy, hitVertical)
-                }
-                if (reflected == null) break
-                segDx = reflected[0]; segDy = reflected[1]
-                if (segment == 0) {
-                    // TARGET's own ghost ball sits at this bend (endX,endY is
-                    // its center). The incoming line above stopped halfBall
-                    // short of it (nearT); without this offset the reflected
-                    // segment started exactly at that center, so it drew
-                    // through the ball's near half while leaving the incoming
-                    // side's gap disconnected. Starting halfBall past the bend
-                    // along the new direction mirrors the same gap on the far
-                    // side instead — symmetric, connected.
-                    curX = endX + segDx * halfBall
-                    curY = endY + segDy * halfBall
-                    remaining -= halfBall
-                } else {
-                    curX = endX; curY = endY
-                }
-            }
+            return
         }
 
         // ---- Combo shot assist ----
-        // Fully independent of Kiss Shot and the plain bank walk above —
-        // always renders when enabled (Tunables.manualComboEnabled),
-        // regardless of whether Kiss Shot is on or off. Uses TARGET (the
-        // ball being hit) and its own destination handle (yellow octagon,
-        // manualComboX/Y) instead of sharing DEST with Kiss. CUE isn't
-        // part of this at all — aim the real shot with the separate
-        // auto-line feature instead. Solved in ComboShot — a plain closed
-        // form, see its header doc.
-        if (Tunables.manualComboEnabled) {
-            val comboDestX = OverlayController.manualComboX
-            val comboDestY = OverlayController.manualComboY
+        // The Octagon is its own independent ball now — not TARGET, and
+        // not connected to CUE either (that's still handled entirely by
+        // the plain bank line/walk above and below, unaffected by combo).
+        // The Octagon travels straight to DEST; solved in ComboShot — a
+        // plain closed form, see its header doc — same math as before,
+        // just fed the Octagon's own position instead of TARGET's. Only
+        // while DEST is cycled to combo (orange); off (red) or kiss
+        // (green) both skip this. No early return: TARGET's own bank walk
+        // below still runs independently if TARGET itself hugs a rail.
+        if (comboActive) {
+            val comboX = OverlayController.manualComboX
+            val comboY = OverlayController.manualComboY
+            val destX = OverlayController.manualDestX
+            val destY = OverlayController.manualDestY
+            // Placement geometry (where the Collision Ghost Ball sits, one
+            // ball-diameter from the Octagon) uses the SAME shared
+            // ghost-ball diameter as the Money Ball/CUE/TARGET — that's
+            // the intentionally-larger-than-real (usually 41px vs the
+            // real ~39px) size the whole app aims by, and it's what makes
+            // the physical "one diameter apart" distance correct. Combo's
+            // radius-scale % is still its own decoupled copy (see
+            // Tunables' Combo section) for fine calibration.
             val solved = ComboShot.solve(
-                targetX, targetY, comboDestX, comboDestY,
+                comboX, comboY, destX, destY,
                 Tunables.ghostBallDiameterPx, Tunables.manualComboRadiusScalePercent,
-                Tunables.manualComboOffsetPx
+                Tunables.manualComboGapOffsetPx
             )
-            // solved == null means the octagon sits inside TARGET's own
-            // footprint (given the current offset) — draw nothing rather
-            // than a wrong answer, same "no false positives" rule as kiss
-            // shot.
+            // solved == null means DEST sits inside the Octagon's own
+            // footprint — draw nothing rather than a wrong answer, same
+            // "no false positives" rule as kiss shot.
             if (solved != null) {
                 val ghostX = solved.ghostX; val ghostY = solved.ghostY
-                val contactX = solved.contactX; val contactY = solved.contactY
-                // TARGET travels straight from its own centre to the
-                // octagon — the "collision mark" dot is where on TARGET's
-                // edge to land the real shot (aimed separately, for real,
-                // with the auto-line feature).
-                drawManualSegLine(canvas, targetX, targetY, comboDestX, comboDestY, manualBorderPaint)
-                drawManualSegLine(canvas, targetX, targetY, comboDestX, comboDestY, manualCenterPaint)
-                // The actual aim point: the striking ball's centre needs
-                // to land HERE, one full ball diameter (plus the Combo
-                // offset tweak) from TARGET's centre — not at the small
-                // contact dot below, which is only the surface-touch point.
+                // The Octagon (Money Ball) travels straight from its own
+                // centre to DEST — a single extended line, continued past
+                // DEST below if it's hugging a rail.
+                drawManualSegLine(canvas, comboX, comboY, destX, destY, manualBorderPaint)
+                drawManualSegLine(canvas, comboX, comboY, destX, destY, manualCenterPaint)
+                // Collision Ghost Ball: no aim line connects to it. Unlike
+                // every other ghost ball in the app (Money/CUE/TARGET, all
+                // pinned to the shared diameter above), THIS is the one
+                // ring that gets its own dedicated, usually-smaller render
+                // size — see Tunables.manualComboBallDiameterOffsetPx —
+                // since it's meant to mark the true contact point rather
+                // than double as an easy-to-grab aiming handle. Just an
+                // outline with a small centre dot, roughly one ball
+                // diameter from the Octagon's own centre (opposite side
+                // from DEST, nudged by the gap offset).
+                val collisionBallDiameterPx =
+                    (Tunables.ghostBallDiameterPx + Tunables.manualComboBallDiameterOffsetPx).coerceAtLeast(2f)
+                val collisionHalfBall = collisionBallDiameterPx / 2f
                 canvas.drawCircle(
                     ghostX, ghostY,
-                    (halfBall - manualMarkerRing.strokeWidth / 2f).coerceAtLeast(1f),
+                    (collisionHalfBall - manualMarkerRing.strokeWidth / 2f).coerceAtLeast(1f),
                     manualMarkerRing
                 )
-                canvas.drawCircle(ghostX, ghostY, 5f, comboContactDot)
-                // Contact dot: where the two balls' surfaces would touch at
-                // zero offset — useful as a reference, but never aim here.
-                canvas.drawCircle(contactX, contactY, 3f, comboContactDot)
+                canvas.drawCircle(ghostX, ghostY, 2.5f, comboContactDot)
 
-                // ---- Bank continuation past the octagon, when it hugs a rail ----
-                // The octagon now plays the role TARGET plays in the plain
-                // Bank Shot walk above: the point where the ball actually
-                // contacts the rail. The TARGET→octagon segment just drawn
+                // ---- Bank continuation past DEST, when DEST hugs a rail ----
+                // DEST now plays the role TARGET plays in the plain Bank
+                // Shot walk below: the point where the ball actually
+                // contacts the rail. The Octagon→DEST segment just drawn
                 // above IS that walk's first leg — this continues it past
-                // the bounce, reusing the exact same rail-reflection code.
-                val comboDestOnEdge = calibrated && (
-                    comboDestX <= left + edgeTol || comboDestX >= right - edgeTol ||
-                    comboDestY <= top + edgeTol || comboDestY >= bottom - edgeTol
+                // the bounce, reusing the exact same rail-reflection code
+                // (BankShot.reflect for this first, correction-curve
+                // accurate bounce, same convention as the plain Bank Shot
+                // walk's own first segment; drawBankSegments then carries
+                // on with reflectMirror for anything beyond that).
+                val destOnEdge = calibrated && (
+                    destX <= left + edgeTol || destX >= right - edgeTol ||
+                    destY <= top + edgeTol || destY >= bottom - edgeTol
                 )
-                val comboMaxLines = Tunables.maxLines
-                if (comboDestOnEdge && comboMaxLines > 1) {
-                    val comboLen = hypot(comboDestX - targetX, comboDestY - targetY)
+                val maxLines = Tunables.maxLines
+                if (destOnEdge && maxLines > 1) {
+                    val comboLen = hypot(destX - comboX, destY - comboY)
                     if (comboLen > 1f) {
-                        val cdx = (comboDestX - targetX) / comboLen
-                        val cdy = (comboDestY - targetY) / comboLen
-                        // Re-derive which wall the octagon is actually
-                        // against from the ray itself (not the edge-
-                        // proximity check above) so the bend point and
-                        // hitVertical are exactly consistent with where the
-                        // ray really lands — same approach the plain Bank
-                        // Shot walk uses.
+                        val cdx = (destX - comboX) / comboLen
+                        val cdy = (destY - comboY) / comboLen
+                        // Re-derive which wall DEST is actually against
+                        // from the ray itself (not the edge-proximity
+                        // check above) so the bend point and hitVertical
+                        // are exactly consistent with where the ray
+                        // really lands — same approach the plain Bank
+                        // Shot walk uses, robust to DEST sitting a few px
+                        // off the true edge within edgeTol.
                         var tX = Float.MAX_VALUE
                         var tY = Float.MAX_VALUE
-                        if (cdx > 1e-4f) tX = (right - targetX) / cdx else if (cdx < -1e-4f) tX = (left - targetX) / cdx
-                        if (cdy > 1e-4f) tY = (bottom - targetY) / cdy else if (cdy < -1e-4f) tY = (top - targetY) / cdy
+                        if (cdx > 1e-4f) tX = (right - comboX) / cdx else if (cdx < -1e-4f) tX = (left - comboX) / cdx
+                        if (cdy > 1e-4f) tY = (bottom - comboY) / cdy else if (cdy < -1e-4f) tY = (top - comboY) / cdy
                         val tWall = minOf(tX, tY)
                         if (tWall != Float.MAX_VALUE && tWall > 0.5f) {
                             val hitVertical = abs(tWall - tX) <= abs(tWall - tY)
-                            val bendX = targetX + cdx * tWall
-                            val bendY = targetY + cdy * tWall
+                            val bendX = comboX + cdx * tWall
+                            val bendY = comboY + cdy * tWall
                             val reflected = BankShot.reflect(cdx, cdy, hitVertical)
                             if (reflected != null) {
                                 if (Tunables.manualGhostRailEnabled) {
@@ -2461,10 +2426,10 @@ class DrawOverlayView(context: Context) : View(context) {
                                     )
                                     canvas.drawCircle(bendX, bendY, 4f, manualMarkerDot)
                                 }
-                                val comboMaxTotalLength = ((right - left) + (bottom - top)) * 1.4f
+                                val maxTotalLength = ((right - left) + (bottom - top)) * 1.4f
                                 drawBankSegments(
                                     canvas, bendX, bendY, reflected[0], reflected[1],
-                                    (comboMaxTotalLength - tWall).coerceAtLeast(0f), 1, comboMaxLines, false,
+                                    (maxTotalLength - tWall).coerceAtLeast(0f), 1, maxLines, false,
                                     left, top, right, bottom, halfBall
                                 )
                             }
@@ -2472,13 +2437,134 @@ class DrawOverlayView(context: Context) : View(context) {
                     }
                 }
             }
+            // Falls through — TARGET's own bank walk below still runs on
+            // its own merits, entirely independent of combo.
+        }
+
+        // ---- Bank trajectory only when TARGET hugs a rail ----
+        if (!targetOnEdge) return
+
+        // Full original bank walk (same as pre-change behaviour).
+        val maxTotalLength = ((right - left) + (bottom - top)) * 1.4f
+        var curX = cueX.coerceIn(left, right)
+        var curY = cueY.coerceIn(top, bottom)
+        var remaining = maxTotalLength
+        val maxLines = Tunables.maxLines
+        var segDx = dx
+        var segDy = dy
+
+        for (segment in 0 until maxLines) {
+            if (remaining <= 1f) break
+
+            var tX = Float.MAX_VALUE
+            var tY = Float.MAX_VALUE
+            if (segDx > 1e-4f) tX = (right - curX) / segDx else if (segDx < -1e-4f) tX = (left - curX) / segDx
+            if (segDy > 1e-4f) tY = (bottom - curY) / segDy else if (segDy < -1e-4f) tY = (top - curY) / segDy
+
+            val tWall = minOf(tX, tY)
+            if (tWall == Float.MAX_VALUE || tWall < 0.5f) break
+
+            val tDraw = minOf(tWall, remaining)
+            val endX = curX + segDx * tDraw
+            val endY = curY + segDy * tDraw
+
+            val segBorder = if (segment == 0) manualBorderPaint else manualBankBorderPaint
+            val segCenter = if (segment == 0) manualCenterPaint else manualBankCenterPaint
+
+            if (segment == 0 && len > halfBall) {
+                // Gap around TARGET; draw only the part past the ghost ball
+                // (CUE→TARGET already drawn above).
+                val farT = len + halfBall
+                if (tDraw > farT) {
+                    val farX = curX + segDx * farT
+                    val farY = curY + segDy * farT
+                    if (Tunables.manualDoubleLineEnabled && Tunables.manualBandStyleEnabled) {
+                        var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                        if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                        manualBandPaint.strokeWidth = doubleHalfWidth * 2f
+                        canvas.drawLine(farX, farY, endX, endY, manualBandPaint)
+                    }
+                    drawManualSegLine(canvas, farX, farY, endX, endY, segBorder)
+                    drawManualSegLine(canvas, farX, farY, endX, endY, segCenter)
+                    if (Tunables.manualDoubleLineEnabled && !Tunables.manualBandStyleEnabled) {
+                        var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                        if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                        val px = -segDy * doubleHalfWidth
+                        val py = segDx * doubleHalfWidth
+                        val segDouble = manualDoublePaint
+                        canvas.drawLine(farX + px, farY + py, endX + px, endY + py, segDouble)
+                        canvas.drawLine(farX - px, farY - py, endX - px, endY - py, segDouble)
+                    }
+                }
+            } else if (segment > 0) {
+                // Reflected bank segments.
+                if (Tunables.manualDoubleLineEnabled && Tunables.manualBandStyleEnabled) {
+                    var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                    if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                    manualBankBandPaint.strokeWidth = doubleHalfWidth * 2f
+                    canvas.drawLine(curX, curY, endX, endY, manualBankBandPaint)
+                }
+                drawManualSegLine(canvas, curX, curY, endX, endY, segBorder)
+                drawManualSegLine(canvas, curX, curY, endX, endY, segCenter)
+                if (Tunables.manualDoubleLineEnabled && !Tunables.manualBandStyleEnabled) {
+                    var doubleHalfWidth = halfBall - Tunables.manualDoubleLineWidthOffsetPx / 2f
+                    if (doubleHalfWidth < 0f) doubleHalfWidth = 0f
+                    val px = -segDy * doubleHalfWidth
+                    val py = segDx * doubleHalfWidth
+                    canvas.drawLine(curX + px, curY + py, endX + px, endY + py, manualBankDoublePaint)
+                    canvas.drawLine(curX - px, curY - py, endX - px, endY - py, manualBankDoublePaint)
+                }
+            }
+
+            remaining -= tDraw
+            if (tDraw < tWall - 0.01f) break
+
+            // Prefer vertical when both are essentially equal (corner), same
+            // as the automatic ray's drawDirection — was a separate latent
+            // inconsistency between the two loops, not the double-bank
+            // cause itself, but worth fixing alongside it.
+            val hitVertical = abs(tWall - tX) <= abs(tWall - tY)
+
+            if (Tunables.manualGhostRailEnabled && segment + 1 < maxLines) {
+                // Centre sits on the inset wall → ghost-ball edge flush on
+                // the true (yellow) table edge.
+                canvas.drawCircle(
+                    endX, endY,
+                    (halfBall - manualMarkerRing.strokeWidth / 2f).coerceAtLeast(1f),
+                    manualMarkerRing
+                )
+                canvas.drawCircle(endX, endY, 4f, manualMarkerDot)
+            }
+
+            val reflected = if (segment == 0) {
+                BankShot.reflect(segDx, segDy, hitVertical)
+            } else {
+                BankShot.reflectMirror(segDx, segDy, hitVertical)
+            }
+            if (reflected == null) break
+            segDx = reflected[0]; segDy = reflected[1]
+            if (segment == 0) {
+                // TARGET's own ghost ball sits at this bend (endX,endY is
+                // its center). The incoming line above stopped halfBall
+                // short of it (nearT); without this offset the reflected
+                // segment started exactly at that center, so it drew
+                // through the ball's near half while leaving the incoming
+                // side's gap disconnected. Starting halfBall past the bend
+                // along the new direction mirrors the same gap on the far
+                // side instead — symmetric, connected.
+                curX = endX + segDx * halfBall
+                curY = endY + segDy * halfBall
+                remaining -= halfBall
+            } else {
+                curX = endX; curY = endY
+            }
         }
     }
 
     /**
      * Draws consecutive rail-bounce segments starting at (startX,startY)
      * heading in direction (startDx,startDy), reflecting off whichever
-     * rail each one hits along the way. Used by Combo Shot's post-octagon
+     * rail each one hits along the way. Used by Combo Shot's post-DEST
      * bank continuation (see drawManualController) for every bounce after
      * the first — the plain CUE/TARGET Bank Shot walk below has its own,
      * separate copy of this same logic for its first segment (which needs

@@ -122,17 +122,15 @@ object AutoAimPrefs {
     private const val KEY_MANUAL_DASHED_LINE_ENABLED = "manual_dashed_line_enabled"
     private const val KEY_MANUAL_GHOST_RAIL_ENABLED = "manual_ghost_rail_enabled"
 
-    // Manual KISS / DEST controller (kiss-shot assist only)
+    // Manual KISS / DEST controller (kiss-shot + combo-shot assist)
     private const val KEY_MANUAL_KISS_ENABLED = "manual_kiss_enabled"
-    private const val KEY_MANUAL_KISS_ACTIVE = "manual_kiss_active"
+    private const val KEY_MANUAL_DEST_MODE = "manual_dest_mode"
     private const val KEY_MANUAL_KISS_RADIUS_SCALE_PERCENT = "manual_kiss_radius_scale_percent"
     private const val KEY_MANUAL_KISS_THROW_ANGLE_DEG = "manual_kiss_throw_angle_deg"
     private const val KEY_MANUAL_KISS_SIDE_LOCK = "manual_kiss_side_lock"
-
-    // Manual COMBO controller (combo-shot assist — independent of Kiss)
-    private const val KEY_MANUAL_COMBO_ENABLED = "manual_combo_enabled"
     private const val KEY_MANUAL_COMBO_RADIUS_SCALE_PERCENT = "manual_combo_radius_scale_percent"
-    private const val KEY_MANUAL_COMBO_OFFSET_PX = "manual_combo_offset_px"
+    private const val KEY_MANUAL_COMBO_BALL_DIAMETER_OFFSET_PX = "manual_combo_ball_diameter_offset_px"
+    private const val KEY_MANUAL_COMBO_GAP_OFFSET_PX = "manual_combo_gap_offset_px"
 
     // ---------------- Defaults & ranges ----------------
 
@@ -346,12 +344,17 @@ object AutoAimPrefs {
     // band-around-the-line look instead of two parallel strokes.
     const val DEFAULT_MANUAL_BAND_STYLE_ENABLED = false
 
-    // ---- Manual KISS / DEST controller (kiss-shot assist only) ----
+    // ---- Manual KISS / DEST controller (kiss-shot + combo-shot assist) ----
     const val DEFAULT_MANUAL_KISS_ENABLED = false
-    // DEST's tap-toggle: off (red) <-> kiss shot on (green, see KissShot).
-    // Defaults to on so turning the checkbox on shows the trajectory right
-    // away, not silently parked off (red).
-    const val DEFAULT_MANUAL_KISS_ACTIVE = true
+    // DEST's 3-way tap-cycle: off (red) -> kiss shot (green, see KissShot)
+    // -> combo shot (orange, see ComboShot) -> back to off.
+    const val DEST_MODE_OFF = 0
+    const val DEST_MODE_KISS = 1
+    const val DEST_MODE_COMBO = 2
+    // Defaults to kiss mode so turning the checkbox on behaves like it
+    // always did before the 3-way cycle existed — starts in kiss mode
+    // (green), not silently parked off (red).
+    const val DEFAULT_MANUAL_DEST_MODE = DEST_MODE_KISS
 
     // Tweak 1 — ball-size calibration for the kiss solve only (percent of
     // the shared ghost-ball diameter). Kept separate from the shared
@@ -373,28 +376,35 @@ object AutoAimPrefs {
     // Tweak 3 — which of the two mirror solutions to use.
     const val DEFAULT_MANUAL_KISS_SIDE_LOCK = KissShot.SIDE_AUTO
 
+    // Combo's own copy of Tweak 1 — same idea, now decoupled from Kiss's so
+    // each mode can be calibrated independently (Combo's Octagon isn't
+    // necessarily the same real ball as Kiss's TARGET).
+    const val DEFAULT_MANUAL_COMBO_RADIUS_SCALE_PERCENT = DEFAULT_MANUAL_KISS_RADIUS_SCALE_PERCENT
+
+    // Combo ball size, in pixels, relative to the shared ghost-ball
+    // diameter — the Money Ball/CUE/TARGET always stay at the shared size
+    // (usually ~41px, intentionally bigger than the real ~39px ball, for
+    // easier alignment). This offset applies ONLY to the Collision Ghost
+    // Ball's render size, so it alone can be dialed down closer to true
+    // scale (e.g. ~37-38px) without touching anything else.
+    const val MANUAL_COMBO_BALL_DIAMETER_OFFSET_MIN_PX = -5f
+    const val MANUAL_COMBO_BALL_DIAMETER_OFFSET_MAX_PX = 5f
+    const val DEFAULT_MANUAL_COMBO_BALL_DIAMETER_OFFSET_PX = -3f
+
+    // Combo gap offset, in pixels: nudges the distance between the Money
+    // Ball and the Collision Ghost Ball. Positive brings them closer
+    // together (their rings can touch); negative pushes them further
+    // apart. Only the Collision Ghost Ball actually moves — the Money
+    // Ball stays exactly where it's dragged, since that's meant to track
+    // the real ball's position.
+    const val MANUAL_COMBO_GAP_OFFSET_MIN_PX = -3f
+    const val MANUAL_COMBO_GAP_OFFSET_MAX_PX = 3f
+    const val DEFAULT_MANUAL_COMBO_GAP_OFFSET_PX = 0f
+
     // The kiss guide lines (CUE→ghost and ghost→DEST) no longer have their
     // own width/opacity — they render with the CUE/TARGET manual line's
     // color/width/opacity (manualLineColor/manualLineWidthPx/
     // manualLineOpacity), just without the double-line flanks.
-
-    // ---- Manual COMBO controller (combo-shot assist — independent of
-    //      Kiss; always overlays when enabled). ----
-    const val DEFAULT_MANUAL_COMBO_ENABLED = false
-
-    // Tweak 1 — same purpose as Kiss's ball-size calibration above, but
-    // its own independent value (Combo's contact geometry can need a
-    // different correction than Kiss's).
-    const val MANUAL_COMBO_RADIUS_SCALE_MIN_PERCENT = 80f
-    const val MANUAL_COMBO_RADIUS_SCALE_MAX_PERCENT = 120f
-    const val DEFAULT_MANUAL_COMBO_RADIUS_SCALE_PERCENT = 92f
-
-    // Tweak 2 — added to the geometric 2×radius ghost-ball separation.
-    // 0 = rings exactly hug (matches the old, non-adjustable behavior).
-    // Negative = rings overlap. Positive = a small gap between them.
-    const val MANUAL_COMBO_OFFSET_MIN_PX = -30f
-    const val MANUAL_COMBO_OFFSET_MAX_PX = 30f
-    const val DEFAULT_MANUAL_COMBO_OFFSET_PX = 0f
 
     // ---------------- Getters / setters ----------------
 
@@ -598,12 +608,12 @@ object AutoAimPrefs {
     fun isManualGhostRailEnabled() = prefs.getBoolean(KEY_MANUAL_GHOST_RAIL_ENABLED, DEFAULT_MANUAL_GHOST_RAIL_ENABLED)
     fun setManualGhostRailEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_GHOST_RAIL_ENABLED, v).apply() }
 
-    // ---- Manual KISS / DEST controller getters/setters (kiss only) ----
+    // ---- Manual KISS / DEST controller getters/setters ----
 
     fun isManualKissEnabled() = prefs.getBoolean(KEY_MANUAL_KISS_ENABLED, DEFAULT_MANUAL_KISS_ENABLED)
     fun setManualKissEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_KISS_ENABLED, v).apply() }
-    fun getManualKissActive() = prefs.getBoolean(KEY_MANUAL_KISS_ACTIVE, DEFAULT_MANUAL_KISS_ACTIVE)
-    fun setManualKissActive(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_KISS_ACTIVE, v).apply() }
+    fun getManualDestMode() = prefs.getInt(KEY_MANUAL_DEST_MODE, DEFAULT_MANUAL_DEST_MODE)
+    fun setManualDestMode(v: Int) { prefs.edit().putInt(KEY_MANUAL_DEST_MODE, v).apply() }
 
     fun getManualKissRadiusScalePercent() =
         prefs.getFloat(KEY_MANUAL_KISS_RADIUS_SCALE_PERCENT, DEFAULT_MANUAL_KISS_RADIUS_SCALE_PERCENT)
@@ -615,17 +625,17 @@ object AutoAimPrefs {
     fun getManualKissSideLock() = prefs.getInt(KEY_MANUAL_KISS_SIDE_LOCK, DEFAULT_MANUAL_KISS_SIDE_LOCK)
     fun setManualKissSideLock(v: Int) { prefs.edit().putInt(KEY_MANUAL_KISS_SIDE_LOCK, v).apply() }
 
-    // ---- Manual COMBO controller getters/setters (independent of Kiss) ----
-
-    fun isManualComboEnabled() = prefs.getBoolean(KEY_MANUAL_COMBO_ENABLED, DEFAULT_MANUAL_COMBO_ENABLED)
-    fun setManualComboEnabled(v: Boolean) { prefs.edit().putBoolean(KEY_MANUAL_COMBO_ENABLED, v).apply() }
-
     fun getManualComboRadiusScalePercent() =
         prefs.getFloat(KEY_MANUAL_COMBO_RADIUS_SCALE_PERCENT, DEFAULT_MANUAL_COMBO_RADIUS_SCALE_PERCENT)
     fun setManualComboRadiusScalePercent(v: Float) { prefs.edit().putFloat(KEY_MANUAL_COMBO_RADIUS_SCALE_PERCENT, v).apply() }
 
-    fun getManualComboOffsetPx() = prefs.getFloat(KEY_MANUAL_COMBO_OFFSET_PX, DEFAULT_MANUAL_COMBO_OFFSET_PX)
-    fun setManualComboOffsetPx(v: Float) { prefs.edit().putFloat(KEY_MANUAL_COMBO_OFFSET_PX, v).apply() }
+    fun getManualComboBallDiameterOffsetPx() =
+        prefs.getFloat(KEY_MANUAL_COMBO_BALL_DIAMETER_OFFSET_PX, DEFAULT_MANUAL_COMBO_BALL_DIAMETER_OFFSET_PX)
+    fun setManualComboBallDiameterOffsetPx(v: Float) { prefs.edit().putFloat(KEY_MANUAL_COMBO_BALL_DIAMETER_OFFSET_PX, v).apply() }
+
+    fun getManualComboGapOffsetPx() =
+        prefs.getFloat(KEY_MANUAL_COMBO_GAP_OFFSET_PX, DEFAULT_MANUAL_COMBO_GAP_OFFSET_PX)
+    fun setManualComboGapOffsetPx(v: Float) { prefs.edit().putFloat(KEY_MANUAL_COMBO_GAP_OFFSET_PX, v).apply() }
 
     /**
      * Copies every persisted value into the live [Tunables] cache and
@@ -702,14 +712,13 @@ object AutoAimPrefs {
         Tunables.manualGhostRailEnabled = isManualGhostRailEnabled()
 
         Tunables.manualKissEnabled = isManualKissEnabled()
-        Tunables.manualKissActive = getManualKissActive()
+        Tunables.manualDestMode = getManualDestMode()
         Tunables.manualKissRadiusScalePercent = getManualKissRadiusScalePercent()
         Tunables.manualKissThrowAngleDeg = getManualKissThrowAngleDeg()
         Tunables.manualKissSideLock = getManualKissSideLock()
-
-        Tunables.manualComboEnabled = isManualComboEnabled()
         Tunables.manualComboRadiusScalePercent = getManualComboRadiusScalePercent()
-        Tunables.manualComboOffsetPx = getManualComboOffsetPx()
+        Tunables.manualComboBallDiameterOffsetPx = getManualComboBallDiameterOffsetPx()
+        Tunables.manualComboGapOffsetPx = getManualComboGapOffsetPx()
 
         pushBankCurve()
     }
